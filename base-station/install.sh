@@ -118,7 +118,7 @@ network:
       addresses:
         - 192.168.50.1/24
       nameservers:
-        addresses: []
+        addresses: [192.168.50.1]
 EOF
 chmod 600 /etc/netplan/01-roban-swarm.yaml
 
@@ -140,9 +140,6 @@ if systemctl is-active systemd-resolved &>/dev/null; then
     info "Disabling systemd-resolved (conflicts with dnsmasq)..."
     systemctl stop systemd-resolved
     systemctl disable systemd-resolved
-    # Point resolv.conf to localhost
-    rm -f /etc/resolv.conf
-    echo "nameserver 127.0.0.1" > /etc/resolv.conf
 fi
 
 # Install dnsmasq config with correct interface
@@ -158,6 +155,17 @@ fi
 
 systemctl enable dnsmasq
 systemctl restart dnsmasq || warn "dnsmasq restart failed — check config"
+
+# Point resolv.conf to dnsmasq AFTER it is running.
+# This avoids a window where DNS is completely broken.
+if ss -ulnp 2>/dev/null | grep -q ":53 .*dnsmasq"; then
+    info "dnsmasq listening on :53 — setting /etc/resolv.conf"
+    rm -f /etc/resolv.conf
+    echo "nameserver 127.0.0.1" > /etc/resolv.conf
+else
+    warn "dnsmasq not yet listening on :53 — leaving resolv.conf unchanged"
+    warn "After reboot, DNS will resolve via dnsmasq (netplan sets 192.168.50.1)"
+fi
 
 # --- Configure chrony (NTP) ---
 info "Configuring chrony as local NTP server..."
@@ -191,10 +199,13 @@ chmod 600 "$SWARM_CONF_DIR/rtkbase.env"
 info "RTKBase env installed to $SWARM_CONF_DIR/rtkbase.env"
 info "  >>> EDIT $SWARM_CONF_DIR/rtkbase.env with actual serial port and credentials <<<"
 
-# Install RTKBase systemd service
+# Install RTKBase systemd service (NOT enabled by default — enable after
+# configuring serial port and verifying RTKBase starts correctly).
+# On Ubuntu x86, RTKBase may need Docker or extra dependencies.
 cp "$SCRIPT_DIR/systemd/rtkbase.service" /etc/systemd/system/rtkbase.service
 systemctl daemon-reload
-systemctl enable rtkbase || warn "rtkbase service enable failed — configure RTKBase first"
+info "RTKBase service installed but NOT enabled."
+info "  After configuring RTKBase, enable with: sudo systemctl enable --now rtkbase"
 
 # --- Install MAVLink hub ---
 info "Configuring MAVLink hub..."
@@ -222,16 +233,24 @@ systemctl start mavlink-hub || warn "mavlink-hub start failed — check config"
 # --- Configure firewall (nftables) ---
 info "Configuring nftables firewall..."
 
-cp "$SCRIPT_DIR/config/firewall.nft" /etc/nftables.d/roban-swarm.nft 2>/dev/null || {
-    mkdir -p /etc/nftables.d
-    cp "$SCRIPT_DIR/config/firewall.nft" /etc/nftables.d/roban-swarm.nft
-}
+mkdir -p /etc/nftables.d
+cp "$SCRIPT_DIR/config/firewall.nft" /etc/nftables.d/roban-swarm.nft
 
-# Apply firewall rules
-nft -f "$SCRIPT_DIR/config/firewall.nft" 2>/dev/null || \
+# Ensure /etc/nftables.conf includes our drop-in directory on boot.
+# Ubuntu's default nftables.conf does NOT include /etc/nftables.d/*.
+if [ -f /etc/nftables.conf ]; then
+    if ! grep -q 'include "/etc/nftables.d/\*.nft"' /etc/nftables.conf 2>/dev/null; then
+        echo 'include "/etc/nftables.d/*.nft"' >> /etc/nftables.conf
+        info "Added include directive to /etc/nftables.conf"
+    fi
+fi
+
+# Apply firewall rules from the installed location
+nft -f /etc/nftables.d/roban-swarm.nft 2>/dev/null || \
     warn "nftables apply failed — apply manually: nft -f /etc/nftables.d/roban-swarm.nft"
 
 systemctl enable nftables 2>/dev/null || true
+systemctl restart nftables 2>/dev/null || true
 
 # --- Install tools ---
 info "Installing diagnostic tools..."
@@ -257,13 +276,16 @@ echo
 echo "NTRIP (RTKBase):"
 echo "  Installed to: /opt/rtkbase"
 echo "  Config: $SWARM_CONF_DIR/rtkbase.env"
-echo "  >>> Configure serial port and credentials before starting <<<"
+echo "  Service: installed but NOT enabled (enable after config)"
+echo "  >>> Configure serial port and credentials, then run:"
+echo "  >>> sudo systemctl enable --now rtkbase"
 echo
 echo "MAVLink Hub:"
 systemctl is-active mavlink-hub 2>/dev/null | sed 's/^/  Status: /'
 echo "  Config: /etc/mavlink-router/main.conf"
 echo "  GCS port: 14550/udp"
-echo "  Heli ports: 14560-14569/udp"
+echo "  Heli telemetry ports: 14560-14569/udp"
+echo "  Heli command ports:  14660-14669/udp"
 echo
 echo "NTP (chrony):"
 systemctl is-active chrony 2>/dev/null | sed 's/^/  Status: /'
@@ -275,7 +297,8 @@ echo "  67/udp (DHCP)"
 echo "  123/udp (NTP)"
 echo "  2101/tcp (NTRIP)"
 echo "  14550/udp (GCS MAVLink)"
-echo "  14560-14569/udp (Heli MAVLink)"
+echo "  14560-14569/udp (Heli MAVLink telemetry)"
+echo "  14660-14669/udp (Heli MAVLink command return)"
 echo
 echo "Next steps:"
 echo "  1. Edit $SWARM_CONF_DIR/rtkbase.env (serial port + credentials)"

@@ -63,11 +63,12 @@ info "OS: $PRETTY_NAME"
 # --- Derive values from heli ID ---
 HELI_NUM=$((10#$HELI_ID))
 UDP_PORT=$((14559 + HELI_NUM))
+CMD_PORT=$((14659 + HELI_NUM))
 EXPECTED_IP="192.168.50.$((100 + HELI_NUM))"
 SYSID=$((10 + HELI_NUM))
 BASE_IP="192.168.50.1"
 
-info "Heli $HELI_ID → IP=$EXPECTED_IP, Port=$UDP_PORT, SYSID=$SYSID"
+info "Heli $HELI_ID → IP=$EXPECTED_IP, Telemetry=$UDP_PORT, Cmd=$CMD_PORT, SYSID=$SYSID"
 
 # --- Install packages ---
 info "Updating apt and installing packages..."
@@ -186,7 +187,10 @@ GNSS_RTCM_SERIAL=${GNSS_RTCM_SERIAL:-/dev/serial/by-id/REPLACE_WITH_GNSS_SERIAL}
 GNSS_RTCM_BAUD=115200
 
 # MAVLink
+# Telemetry outbound to base hub
 UDP_PORT=$UDP_PORT
+# Command inbound from base hub (deterministic return path)
+CMD_PORT=$CMD_PORT
 EOF
 chmod 600 "$SWARM_CONF_DIR/heli.env"
 info "heli.env written to $SWARM_CONF_DIR/heli.env"
@@ -242,14 +246,22 @@ TcpServerPort = 0
 ReportStats = false
 MavlinkDialect = ardupilotmega
 
+# Flight controller serial connection
 [UartEndpoint fc]
 Device = $FC_SERIAL
 Baud = $FC_BAUD
 
-[UdpEndpoint base]
+# Telemetry outbound to base station hub
+[UdpEndpoint to_base]
 Mode = Normal
 Address = $BASE_IP
 Port = $UDP_PORT
+
+# Command inbound from base station hub (deterministic return path)
+[UdpEndpoint from_base]
+Mode = Server
+Address = 0.0.0.0
+Port = $CMD_PORT
 EOF
 
 # --- Install systemd services ---
@@ -308,9 +320,12 @@ systemctl enable ntrip-client
 systemctl enable mavlink-router
 systemctl enable watchdog 2>/dev/null || true
 
-# Don't start services yet — serial ports may not be configured
-info "Services installed and enabled (will start on next boot)."
-info "To start now: sudo systemctl start ntrip-client mavlink-router"
+# Don't start services now — serial ports are likely still placeholders.
+# Services are enabled and will start automatically on next boot once
+# heli.env has real serial port paths configured.
+info "Services installed and enabled (will auto-start on boot)."
+info "Not started now because serial ports are placeholders."
+info "After configuring heli.env, start with: sudo systemctl start ntrip-client mavlink-router"
 
 # --- Install tools ---
 info "Setting tool scripts executable..."
@@ -339,7 +354,8 @@ echo
 echo "Identity:"
 echo "  Heli ID:     $HELI_ID"
 echo "  Expected IP: $EXPECTED_IP"
-echo "  UDP port:    $UDP_PORT"
+echo "  Telemetry:   $UDP_PORT (outbound to base)"
+echo "  Command:     $CMD_PORT (inbound from base)"
 echo "  SYSID:       $SYSID (set this on the FC!)"
 echo
 echo "WiFi:"
@@ -354,7 +370,7 @@ echo "  FC:   $FC_SERIAL"
 echo "  GNSS: $GNSS_RTCM_SERIAL"
 echo "  >>> Run companion/tools/detect_ports.sh and update heli.env <<<"
 echo
-echo "Services (enabled, not started):"
+echo "Services (enabled for boot, not started — serial ports are placeholders):"
 for svc in ntrip-client mavlink-router watchdog; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
     enabled=$(systemctl is-enabled "$svc" 2>/dev/null || echo "disabled")

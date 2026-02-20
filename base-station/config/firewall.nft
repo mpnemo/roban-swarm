@@ -35,8 +35,13 @@ table inet roban_swarm {
         # MAVLink GCS endpoint
         udp dport 14550 accept
 
-        # MAVLink heli endpoints (14560-14569)
+        # MAVLink heli telemetry inbound (14560-14569)
         udp dport 14560-14569 accept
+
+        # MAVLink heli command return — base sends commands to companion:1466X
+        # (only needed if base initiates to companion; companions also listen)
+        # Included for completeness — outbound is already accepted by policy
+        udp dport 14660-14669 accept
 
         # Log and drop everything else
         log prefix "nft-drop: " drop

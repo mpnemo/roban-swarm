@@ -61,7 +61,7 @@ The Roban Swarm field network consists of three layers:
 |---------|---------------|---------|
 | dnsmasq | 53/udp, 67/udp | DHCP + DNS for all companions |
 | RTKBase | 2101/tcp | NTRIP caster — serves RTCM3 corrections |
-| mavlink-routerd | 14560–14569/udp (in), 14550/udp (GCS) | Bidirectional MAVLink hub |
+| mavlink-routerd | 14560–14569/udp (telem in), 14660–14669/udp (cmd out), 14550/udp (GCS) | Bidirectional MAVLink hub |
 | chrony | 123/udp | NTP time server |
 | sshd | 22/tcp | Administration |
 
@@ -115,7 +115,7 @@ mavlink-routerd (companion)
     │ UDP endpoint → base:1456X
     ▼
 mavlink-routerd hub (base station)
-    │ Listens on 14560–14569
+    │ Receives telemetry on 14560–14569
     │ Aggregates all streams
     │ ↕ bidirectional
     │ GCS endpoint → :14550
@@ -124,20 +124,21 @@ GCS (Mission Planner / QGroundControl)
     │ Sends commands (arm, mode, mission)
     ▼
 mavlink-routerd hub
-    │ Routes by target SYSID
+    │ Sends commands to companion_IP:14660–14669
     ▼
-Correct companion → FC
+Correct companion (Server :1466X) → FC
 ```
 
 ### Port Assignment
 
 ```
-Base station listens:
-  UDP 14560 ← Heli01 (SYSID 11)
-  UDP 14561 ← Heli02 (SYSID 12)
-  UDP 14562 ← Heli03 (SYSID 13)
-  ...
-  UDP 14569 ← Heli10 (SYSID 20)
+Base station (telemetry in):     Companion (command in):
+  UDP 14560 ← Heli01 (SYS 11)     UDP 14660 on .50.101
+  UDP 14561 ← Heli02 (SYS 12)     UDP 14661 on .50.102
+  UDP 14562 ← Heli03 (SYS 13)     UDP 14662 on .50.103
+  ...                               ...
+  UDP 14569 ← Heli10 (SYS 20)     UDP 14669 on .50.110
+
   UDP 14550 ↔ GCS (bidirectional)
 ```
 

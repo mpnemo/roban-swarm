@@ -2,10 +2,10 @@
 
 **Field-deployable RTK + WiFi MAVLink network for 10 ArduPilot helicopters.**
 
-One base station provides centimetre-accurate GNSS corrections and a
-bidirectional MAVLink hub to ten companion computers, each mounted on a
-helicopter. A single GCS operator sees and commands every vehicle from the
-base-station network.
+One base station provides centimeter-level GNSS corrections (RTK Float
+~20 cm, RTK Fix ~2 cm) and a bidirectional MAVLink hub to ten companion
+computers, each mounted on a helicopter. A single GCS operator sees and
+commands every vehicle from the base-station network.
 
 ```
                         ┌────────────────────┐
@@ -108,21 +108,23 @@ RTCM goes **directly** into the LC29H receiver via serial. ArduPilot does
 **not** need MAVLink GPS_RTCM_DATA injection — the receiver handles
 corrections internally and outputs a corrected position to the FC.
 
-**MAVLink telemetry flow** (bidirectional):
+**MAVLink telemetry + command flow** (bidirectional, deterministic):
 ```
 FC TELEM UART
     │ serial (921600 baud)
     ▼
 mavlink-routerd (companion)
-    │ UDP to base:1456X
+    │ telemetry OUT → base:1456X (Normal)
+    │ commands  IN  ← base → companion:1466X (Server)
     ▼
 mavlink-routerd hub (base station)
-    │ aggregates all 10 helis
+    │ listens :14560-14569 (telemetry in)
+    │ sends to companion_IP:14660-14669 (commands out)
     ▼
 GCS endpoint UDP :14550
-    │ bidirectional: commands flow back
+    │ bidirectional: commands flow back via dedicated ports
     ▼
-mavlink-routerd hub → per-heli UDP → companion → FC
+mavlink-routerd hub → companion:1466X → FC
 ```
 
 The base-station MAVLink hub is a **bidirectional router**, not a telemetry
@@ -151,8 +153,9 @@ Base station:    192.168.50.1 (static, LAN NIC)
 DHCP range:      192.168.50.100 – 192.168.50.199 (dnsmasq)
 Reservations:    192.168.50.101 – 192.168.50.110 (Heli01–Heli10)
 NTRIP caster:    192.168.50.1:2101/tcp
-MAVLink inbound: 192.168.50.1:14560–14569/udp (one port per heli)
-MAVLink GCS:     192.168.50.1:14550/udp (bidirectional)
+MAVLink telemetry: 192.168.50.1:14560–14569/udp (heli → base)
+MAVLink commands:  companion:14660–14669/udp (base → heli)
+MAVLink GCS:       192.168.50.1:14550/udp (bidirectional)
 NTP:             192.168.50.1:123/udp (chrony)
 DNS:             192.168.50.1:53 (dnsmasq)
 ```
@@ -227,6 +230,19 @@ procedure and template.
   NMEA/UBX to the FC GPS port.
 - ArduPilot sees RTK Float/Fix status in GPS_RAW_INT.
 
+### LC29H Output Configuration
+
+The LC29H rover's NMEA/UBX output UART connects directly to the FC GPS
+port. You must configure the LC29H output protocol to match what
+ArduPilot can parse:
+
+- **NMEA** — widely supported (`GPS_TYPE = 5`), but less precise fields
+- **UBX-like** — try `GPS_TYPE = 2` first; LC29H supports UBX protocol
+- **Unicore** — try `GPS_TYPE = 26` if the above don't work
+
+This is a configuration step — test empirically on the bench before
+field deployment. See `docs/ardupilot_params.md` for details.
+
 ### Why Direct RTCM Injection?
 
 ArduPilot supports MAVLink GPS_RTCM_DATA injection, but it adds
@@ -240,27 +256,42 @@ requires no ArduPilot configuration for corrections.
 
 ### Companion (per heli)
 
-`mavlink-routerd` connects:
-- **Serial endpoint:** FC TELEM UART (e.g., `/dev/serial/by-id/FC_TELEM`)
+`mavlink-routerd` has three endpoints:
+- **Serial:** FC TELEM UART (e.g., `/dev/serial/by-id/FC_TELEM`)
   at 921600 baud
-- **UDP endpoint:** `192.168.50.1:1456X` (X = heli index, 0–9)
+- **Telemetry outbound (Normal):** sends to `192.168.50.1:1456X`
+- **Command inbound (Server):** listens on `:1466X` for return commands
+
+This dual-port design makes the return path deterministic — the base
+hub sends commands to a known companion IP and port, regardless of NAT
+or ephemeral-port behaviour.
 
 Configuration is generated from `heli.env` during install.
 
 ### Base Station Hub
 
-`mavlink-routerd` listens on:
-- **UDP ports 14560–14569** (one per heli, inbound)
-- **UDP port 14550** (GCS endpoint, bidirectional)
+`mavlink-routerd` manages per-heli endpoint pairs:
+- **UDP 14560–14569 (Server):** receives telemetry from each heli
+- **UDP 14660–14669 (Normal):** sends commands back to each heli's
+  reserved IP
+- **UDP 14550 (Normal):** GCS endpoint, bidirectional
 
 The hub:
-1. Receives telemetry from all 10 helis.
+1. Receives telemetry from all 10 helis on :1456X.
 2. Forwards all telemetry to GCS on :14550.
 3. Receives commands from GCS on :14550.
-4. Routes commands back to the correct heli based on target SYSID
-   (MAVLink addressing).
+4. Sends commands to the correct heli at `192.168.50.10X:1466X`.
 
-This is a **full bidirectional router**, not a unidirectional aggregator.
+This is a **full bidirectional router** with deterministic return paths,
+not a unidirectional aggregator.
+
+### Port Summary
+
+| Direction | Base Port | Companion Port | Protocol |
+|-----------|----------|---------------|----------|
+| Telemetry (heli → base) | 14560–14569 (Server) | ephemeral (Normal) | UDP |
+| Commands (base → heli) | ephemeral (Normal) | 14660–14669 (Server) | UDP |
+| GCS (bidirectional) | 14550 | — | UDP |
 
 ### Optional Extensions
 
@@ -361,6 +392,16 @@ These points were identified during architecture review and are
    wired network may be affected depending on AP implementation).
    Use a fixed channel (5 GHz preferred) for stable outdoor operation.
 
+8. **Base station DNS is local-only.** dnsmasq serves DNS on
+   127.0.0.1 and 192.168.50.1. No upstream DNS is configured by
+   default (isolated field network). Add upstream servers to
+   dnsmasq.conf if internet uplink is available.
+
+9. **MAVLink command return path uses dedicated ports.** Each
+   companion listens on port 1466X for commands from the base hub.
+   This avoids relying on UDP source-port tracking and makes
+   bidirectional routing deterministic.
+
 ---
 
 ## How to Run
@@ -441,7 +482,7 @@ roban-swarm/
 │   │   ├── dnsmasq.conf               # DHCP + DNS
 │   │   ├── rtkbase.env                # RTKBase environment
 │   │   ├── mavlink-routerd.conf       # MAVLink hub config
-│   │   └── firewall.nft               # nftables rules
+│   │   └── firewall.nft               # nftables rules (persisted via include)
 │   ├── systemd/
 │   │   ├── dnsmasq.service.d/override.conf
 │   │   ├── mavlink-hub.service
