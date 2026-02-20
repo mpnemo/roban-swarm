@@ -1,0 +1,21 @@
+[Unit]
+Description=Roban Swarm NTRIP Client (str2str → LC29H)
+After=network-online.target NetworkManager-wait-online.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/roban-swarm/heli.env
+ExecStart=/bin/sh -c 'exec str2str \
+    -in ntrip://${NTRIP_USER}:${NTRIP_PASS}@${BASE_IP}:${NTRIP_PORT}/${NTRIP_MOUNT} \
+    -out serial://${GNSS_RTCM_SERIAL}:${GNSS_RTCM_BAUD}:8:n:1'
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Access to serial devices
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

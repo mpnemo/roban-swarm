@@ -1,0 +1,16 @@
+[Unit]
+Description=Roban Swarm Service Watchdog
+After=mavlink-router.service ntrip-client.service
+Wants=mavlink-router.service ntrip-client.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/roban-swarm/heli.env
+ExecStart=/opt/roban-swarm/watchdog.sh
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

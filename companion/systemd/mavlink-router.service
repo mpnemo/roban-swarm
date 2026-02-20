@@ -1,0 +1,18 @@
+[Unit]
+Description=Roban Swarm MAVLink Router (FC ↔ Base)
+After=network-online.target NetworkManager-wait-online.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mavlink-routerd -c /etc/mavlink-router/main.conf
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Access to serial devices
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

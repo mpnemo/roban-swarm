@@ -1,0 +1,14 @@
+# Roban Swarm — Base station static IP on LAN interface
+# Applied by install.sh to /etc/netplan/01-roban-swarm.yaml
+#
+# Adjust "eth0" to your actual LAN NIC name (check: ip link show)
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      addresses:
+        - 192.168.50.1/24
+      # No gateway — this is an isolated field network
+      nameservers:
+        addresses: []

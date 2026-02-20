@@ -1,0 +1,52 @@
+#!/usr/sbin/nft -f
+# Roban Swarm — nftables firewall rules for base station
+# Installed to /etc/nftables.d/roban-swarm.nft (or applied via install.sh)
+
+table inet roban_swarm {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Allow established/related connections
+        ct state established,related accept
+
+        # Allow loopback
+        iif lo accept
+
+        # Allow ICMP (ping)
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        # SSH
+        tcp dport 22 accept
+
+        # DHCP server (dnsmasq)
+        udp dport 67 accept
+
+        # DNS (dnsmasq)
+        udp dport 53 accept
+        tcp dport 53 accept
+
+        # NTP (chrony)
+        udp dport 123 accept
+
+        # NTRIP caster (RTKBase)
+        tcp dport 2101 accept
+
+        # MAVLink GCS endpoint
+        udp dport 14550 accept
+
+        # MAVLink heli endpoints (14560-14569)
+        udp dport 14560-14569 accept
+
+        # Log and drop everything else
+        log prefix "nft-drop: " drop
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

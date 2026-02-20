@@ -1,0 +1,26 @@
+# Secrets — NEVER commit credentials
+*.secret
+*.credentials
+wifi_passphrase
+ntrip_credentials
+heli.env
+
+# Local overrides
+*.local
+*.override
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Build artifacts
+*.o
+*.deb
+*.tar.gz

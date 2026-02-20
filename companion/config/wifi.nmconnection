@@ -1,0 +1,25 @@
+# Roban Swarm — WiFi NetworkManager connection profile
+# Installed to /etc/NetworkManager/system-connections/RTK-FIELD.nmconnection
+#
+# The passphrase is injected by install.sh from heli.env.
+# Do NOT commit this file with a real passphrase.
+
+[connection]
+id=RTK-FIELD
+type=wifi
+autoconnect=true
+autoconnect-priority=100
+
+[wifi]
+mode=infrastructure
+ssid=RTK-FIELD
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=REPLACE_WITH_WIFI_PASSPHRASE
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=disabled

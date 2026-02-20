@@ -1,0 +1,20 @@
+[Unit]
+Description=Roban Swarm RTKBase GNSS Base Station
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/roban-swarm/rtkbase.env
+WorkingDirectory=/opt/rtkbase
+ExecStart=/opt/rtkbase/run_cast.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# RTKBase may need access to serial devices
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target
