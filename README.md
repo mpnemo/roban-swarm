@@ -474,7 +474,8 @@ roban-swarm/
 │   ├── ops_runbook.md                 # Field operations runbook
 │   ├── ap_setup_checklist.md          # AP configuration checklist
 │   ├── identity_mapping.md            # MAC/IP/SYSID mapping procedure
-│   └── troubleshooting.md            # Common issues + fixes
+│   ├── troubleshooting.md            # Common issues + fixes
+│   └── bringup_log.md               # Hardware bring-up session log
 ├── base-station/
 │   ├── install.sh                     # Base station provisioning
 │   ├── config/
@@ -517,6 +518,30 @@ roban-swarm/
 
 ---
 
+## Bring-up Status
+
+Hardware bring-up is **in progress**. See
+[docs/bringup_log.md](docs/bringup_log.md) for detailed session logs.
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 0 | Pre-hardware prep | Partially done — OS images ready, WiFi band TBD |
+| 1 | Base station bring-up | ~90% — all services running on x86 mini-PC |
+| 2 | First companion (Heli01) | Not started — OPi Zero powered on, got DHCP |
+| 3 | Scale to 10 helis | Not started |
+| 4 | Field RTK validation | Not started |
+| 5 | Soak testing | Not started |
+| 6 | Operational hardening | Not started |
+
+**Base station:** `roban-swarm@192.168.3.119` (home WiFi) /
+`192.168.50.1` (RTK-FIELD LAN)
+
+**Known issues resolved:** systemd-resolved port 53 conflict, netplan
+boot hang without Ethernet cable, WiFi config preservation during
+install, mavlink-routerd built from source (not in apt).
+
+---
+
 ## Deliverables
 
 - [x] GitHub repo with full folder structure
@@ -528,6 +553,7 @@ roban-swarm/
 - [x] Documentation: architecture, wiring, ArduPilot params, ops runbook,
       AP setup, identity mapping, troubleshooting
 - [x] Test checklists: bench, field, soak
+- [x] Bringup log with session history ([docs/bringup_log.md](docs/bringup_log.md))
 
 ---
 

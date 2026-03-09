@@ -1,9 +1,11 @@
 # Next Steps Plan — Roban Swarm RTK Field Network
 
-**Status:** Repo is ~95% code-complete. All scripts, configs, systemd units,
-docs, and test checklists are written. What remains is hands-on hardware
-bring-up, credential provisioning, empirical testing, and operational
-hardening.
+**Status:** Hardware bring-up **in progress**. Base station (Phase 1) is ~90%
+complete — all services running on x86 mini-PC. First Orange Pi Zero has been
+powered on and reached the network. Companion install (Phase 2) is next.
+
+See [docs/bringup_log.md](bringup_log.md) for detailed session-by-session
+progress, issues encountered, and resolutions.
 
 This plan is ordered by dependency — each phase depends on the previous
 one completing. Estimated timeline: **5–7 working days** for a 2-person team
@@ -11,7 +13,7 @@ with all hardware on hand.
 
 ---
 
-## Phase 0: Pre-Hardware Preparation (Day 0 — half day)
+## Phase 0: Pre-Hardware Preparation (Day 0 — half day) ⏳ IN PROGRESS
 
 Things to resolve at the desk before touching any hardware.
 
@@ -73,13 +75,11 @@ NTRIP mount:     BASE   (or match RTKBase config)
 Record these in a **secure offline document** (not in git).
 Every companion and the base station need the same NTRIP credentials.
 
-### 0.4 Prepare OS images
+### 0.4 Prepare OS images — DONE
 
-- **Base station:** Download Ubuntu Server 22.04 LTS (or 24.04 LTS)
-  ISO. Flash to USB drive for install.
-- **Companions (×10):** Download Armbian Ubuntu Jammy image for Orange
-  Pi Zero. Flash to 10 microSD cards. Consider using `dd` or Balena
-  Etcher for batch flashing.
+- **Base station:** Ubuntu Server installed on x86 mini-PC. ✅
+- **Companions (×10):** At least one Orange Pi Zero flashed with Armbian
+  and booted successfully. Remaining 9 TBD.
 
 ### 0.5 Inventory all hardware
 
@@ -94,31 +94,32 @@ Lay out and physically verify:
 
 ---
 
-## Phase 1: Base Station Bring-up (Day 1)
+## Phase 1: Base Station Bring-up (Day 1) ⏳ ~90% DONE
 
-### 1.1 Install OS and run provisioning
-
-```bash
-# After Ubuntu Server is installed and has internet temporarily:
-sudo apt update && sudo apt install git -y
-git clone https://github.com/mpnemo/roban-swarm.git
-cd roban-swarm
-sudo ./base-station/install.sh
-```
-
-### 1.2 Verify base network services
+### 1.1 Install OS and run provisioning — DONE
 
 ```bash
-./base-station/tools/status_dump.sh
+# Repo was SCP'd from Mac (git clone failed due to DNS on base station):
+scp -r Roban-swarm/* roban-swarm@192.168.3.119:~/roban-swarm/
+# Then on base station:
+sudo bash -x ./base-station/install.sh
 ```
 
-Confirm:
-- [ ] Static IP 192.168.50.1 on detected LAN NIC
-- [ ] dnsmasq running, listening on :53 and :67
-- [ ] chrony running, serving NTP
-- [ ] mavlink-hub running, listening on :14550 and :14560–14569
-- [ ] nftables rules loaded (check `nft list ruleset`)
-- [ ] `/etc/resolv.conf` points to 127.0.0.1
+**Note:** git clone from GitHub failed on the base station (DNS/network
+issue). Workaround was SCP from development Mac. The install script was
+also patched during this process — see bringup_log.md for details.
+
+**mavlink-routerd** was not available via apt and was **built from source**
+on the base station using meson + ninja.
+
+### 1.2 Verify base network services — DONE
+
+- [x] Static IP 192.168.50.1 on `enp2s0`
+- [x] dnsmasq running (after disabling systemd-resolved on port 53)
+- [x] chrony running, serving NTP
+- [x] mavlink-hub running, listening on configured ports
+- [x] nftables rules loaded
+- [ ] `/etc/resolv.conf` points to 127.0.0.1 — needs verification
 
 ### 1.3 Configure AP (manual — web UI)
 
@@ -169,7 +170,11 @@ ping 192.168.50.1   # must succeed — confirms no client isolation
 
 ---
 
-## Phase 2: First Companion Integration (Day 2)
+## Phase 2: First Companion Integration (Day 2) — NOT STARTED
+
+**Pre-status:** One Orange Pi Zero has been powered on and received DHCP
+address 192.168.50.192 from the base station. SSH as root was attempted.
+Companion install.sh has NOT been run yet.
 
 ### 2.1 Flash and install Heli 01
 

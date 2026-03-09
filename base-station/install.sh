@@ -9,6 +9,8 @@
 #   - NTRIP caster (RTKBase)
 #   - MAVLink hub (mavlink-routerd)
 #   - Firewall (nftables)
+#   - Disables cloud-init network rewrites
+#   - Disables systemd-networkd-wait-online (boot speed)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -119,18 +121,49 @@ network:
         - 192.168.50.1/24
       nameservers:
         addresses: [192.168.50.1]
+      optional: true
+      link-local: []
+      activation-mode: manual
 EOF
+
+# Force IP assignment even if cable is not connected.
+# networkd won't assign the IP if the link has no carrier, but dnsmasq
+# needs to bind to 192.168.50.1 at boot regardless.
+ip addr add 192.168.50.1/24 dev "${LAN_NIC}" 2>/dev/null || true
 chmod 600 /etc/netplan/01-roban-swarm.yaml
 
-# Remove default netplan configs that might conflict
+# Remove default netplan configs that might conflict with the LAN NIC.
+# IMPORTANT: Preserve any config managing WiFi (wlp*) — we may be connected
+# via WiFi during install and must not drop that connection.
 for f in /etc/netplan/00-*.yaml /etc/netplan/50-*.yaml; do
     if [ -f "$f" ] && [ "$f" != "/etc/netplan/01-roban-swarm.yaml" ]; then
-        info "Backing up existing netplan config: $f"
-        mv "$f" "${f}.bak.$(date +%s)"
+        # Check if this config manages a WiFi interface — if so, keep it
+        if grep -q "wifis:" "$f" 2>/dev/null || grep -q "wlp" "$f" 2>/dev/null; then
+            info "Keeping WiFi netplan config: $f (needed for SSH access)"
+        else
+            info "Backing up existing netplan config: $f"
+            mv "$f" "${f}.bak.$(date +%s)"
+        fi
     fi
 done
 
 netplan apply 2>/dev/null || warn "netplan apply failed — may need reboot"
+
+# --- Disable cloud-init network rewrites ---
+# cloud-init can overwrite netplan configs on reboot. Lock it out.
+info "Disabling cloud-init network configuration..."
+mkdir -p /etc/cloud/cloud.cfg.d
+echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+info "  cloud-init network rewriting disabled."
+
+# --- Disable systemd-networkd-wait-online (boot speed) ---
+# This service waits for all NICs to come online, delaying boot significantly
+# when the LAN NIC has no cable connected. Safe to disable since we manage
+# networking explicitly.
+info "Disabling systemd-networkd-wait-online.service..."
+systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
+systemctl mask systemd-networkd-wait-online.service 2>/dev/null || true
+info "  systemd-networkd-wait-online disabled and masked."
 
 # --- Configure dnsmasq ---
 info "Configuring dnsmasq..."
