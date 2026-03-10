@@ -525,20 +525,24 @@ Hardware bring-up is **in progress**. See
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 0 | Pre-hardware prep | Partially done — OS images ready, WiFi band TBD |
-| 1 | Base station bring-up | ~90% — all services running on x86 mini-PC |
-| 2 | First companion (Heli01) | Not started — OPi Zero powered on, got DHCP |
+| 0 | Pre-hardware prep | Done — OS images ready, WiFi confirmed (2.4 GHz Unisoc) |
+| 1 | Base station bring-up | ~95% — all services running, needs NAT/sysctl persistence |
+| 2 | First companion (Heli01) | ~60% — software installed, needs serial ports + NTRIP creds |
 | 3 | Scale to 10 helis | Not started |
 | 4 | Field RTK validation | Not started |
 | 5 | Soak testing | Not started |
 | 6 | Operational hardening | Not started |
 
+**Hardware update:** Companion boards are Orange Pi Zero **2W** (H618,
+aarch64) running Armbian Trixie (Debian 13), not Zero H2+/H3 with Jammy.
+
 **Base station:** `roban-swarm@192.168.3.119` (home WiFi) /
 `192.168.50.1` (RTK-FIELD LAN)
 
 **Known issues resolved:** systemd-resolved port 53 conflict, netplan
-boot hang without Ethernet cable, WiFi config preservation during
-install, mavlink-routerd built from source (not in apt).
+boot hang without Ethernet cable, dual DHCP conflict (AP disabled),
+mavlink-routerd built from source, OPi clock sync (no RTC),
+Chinese firewall GitHub workaround (SCP source).
 
 ---
 
