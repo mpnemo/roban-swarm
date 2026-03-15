@@ -1,0 +1,17 @@
+[Unit]
+Description=Roban Swarm GPS Bridge (NMEA → MAVLink GPS_INPUT)
+After=mavlink-router.service
+Requires=mavlink-router.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/roban-swarm/heli.env
+ExecStart=/usr/bin/python3 -u /opt/roban-swarm/gps-bridge.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

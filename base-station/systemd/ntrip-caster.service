@@ -1,0 +1,18 @@
+[Unit]
+Description=Roban Swarm NTRIP Caster (LC29H base → str2str)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/str2str \
+    -in serial://ttyUSB0:115200:8:n:1:off \
+    -out ntripc://admin:roban@:2101/BASE
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

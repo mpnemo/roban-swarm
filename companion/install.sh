@@ -141,24 +141,54 @@ mkdir -p "$SWARM_CONF_DIR"
 mkdir -p "$SWARM_OPT_DIR"
 mkdir -p /etc/mavlink-router
 
-# --- Detect serial ports ---
-info "Detecting serial ports..."
-FC_SERIAL=""
-GNSS_RTCM_SERIAL=""
+# --- Configure native UARTs ---
+# OPi Zero 2W uses SoC UARTs on the 40-pin header (no USB-UART needed):
+#   UART0 (ttyS0) pins 8/10 (PH0/PH1) → flight controller MAVLink
+#   UART5 (ttyS5) pins 11/13 (PH2/PH3) → LC29H GNSS RTCM
+info "Configuring native UARTs..."
 
-# List available serial-by-id devices
-if [ -d /dev/serial/by-id ] && [ "$(ls -A /dev/serial/by-id/ 2>/dev/null)" ]; then
-    info "Found /dev/serial/by-id/ devices:"
-    for link in /dev/serial/by-id/*; do
-        info "  $link"
-    done
-    # Cannot auto-determine which is FC vs GNSS — leave for user
-    info "  Auto-detection cannot distinguish FC from GNSS."
-    info "  Edit $SWARM_CONF_DIR/heli.env after install."
-else
-    info "No /dev/serial/by-id/ devices found."
-    info "Connect USB-UART adapters and edit $SWARM_CONF_DIR/heli.env."
+# Enable UART5 overlay if not already set
+ARMBIAN_ENV="/boot/armbianEnv.txt"
+if [ -f "$ARMBIAN_ENV" ]; then
+    if ! grep -q "uart5" "$ARMBIAN_ENV"; then
+        if grep -q "^overlays=" "$ARMBIAN_ENV"; then
+            sed -i 's/^overlays=.*/& uart5/' "$ARMBIAN_ENV"
+        else
+            echo "overlays=uart5" >> "$ARMBIAN_ENV"
+        fi
+        info "UART5 overlay enabled (reboot required)"
+    fi
+
+    # Set console=display to free UART0 from kernel console
+    if grep -q "^console=both" "$ARMBIAN_ENV"; then
+        sed -i 's/^console=both/console=display/' "$ARMBIAN_ENV"
+        info "Console switched to display (frees UART0)"
+    fi
 fi
+
+# Fix boot.cmd so console=display doesn't still add ttyS0
+if [ -f /boot/boot.cmd ]; then
+    OLD_LINE='if test "${console}" = "display" || test "${console}" = "both"'
+    if grep -q "$OLD_LINE" /boot/boot.cmd; then
+        python3 -c "
+p = open('/boot/boot.cmd').read()
+old = 'if test \"\${console}\" = \"display\" || test \"\${console}\" = \"both\"; then setenv consoleargs \"console=ttyS0,115200 console=tty1\"; fi'
+new = 'if test \"\${console}\" = \"both\"; then setenv consoleargs \"console=ttyS0,115200 console=tty1\"; fi\nif test \"\${console}\" = \"display\"; then setenv consoleargs \"console=tty1\"; fi'
+open('/boot/boot.cmd','w').write(p.replace(old, new))
+"
+        mkimage -C none -A arm64 -T script -d /boot/boot.cmd /boot/boot.scr > /dev/null 2>&1
+        info "Fixed boot.cmd console handling"
+    fi
+fi
+
+# Disable serial-getty on ttyS0 so MAVLink can use it
+systemctl stop serial-getty@ttyS0.service 2>/dev/null || true
+systemctl disable serial-getty@ttyS0.service 2>/dev/null || true
+systemctl mask serial-getty@ttyS0.service 2>/dev/null || true
+info "serial-getty@ttyS0 disabled (UART0 free for MAVLink)"
+
+FC_SERIAL="/dev/ttyS0"
+GNSS_RTCM_SERIAL="/dev/ttyS5"
 
 # --- Create heli.env ---
 info "Creating heli.env..."
@@ -171,7 +201,7 @@ HELI_ID=$HELI_ID
 
 # Network
 BASE_IP=$BASE_IP
-WIFI_SSID=RTK-FIELD
+WIFI_SSID=Robanswarm
 
 # NTRIP (RTCM corrections)
 NTRIP_PORT=2101
@@ -179,11 +209,12 @@ NTRIP_MOUNT=BASE
 NTRIP_USER=admin
 NTRIP_PASS=REPLACE_WITH_NTRIP_PASSWORD
 
-# Serial ports — EDIT THESE after connecting hardware
-# Run: ./companion/tools/detect_ports.sh to find ports
-FC_SERIAL=${FC_SERIAL:-/dev/serial/by-id/REPLACE_WITH_FC_SERIAL}
-FC_BAUD=921600
-GNSS_RTCM_SERIAL=${GNSS_RTCM_SERIAL:-/dev/serial/by-id/REPLACE_WITH_GNSS_SERIAL}
+# Serial ports — native SoC UARTs on 40-pin header
+# UART0 (pins 8/10, PH0/PH1) → Flight controller MAVLink
+FC_SERIAL=$FC_SERIAL
+FC_BAUD=115200
+# UART5 (pins 11/13, PH2/PH3) → LC29H GNSS RTCM
+GNSS_RTCM_SERIAL=$GNSS_RTCM_SERIAL
 GNSS_RTCM_BAUD=115200
 
 # MAVLink
@@ -365,10 +396,9 @@ if command -v nmcli &>/dev/null; then
     nmcli -t -f DEVICE,STATE dev status 2>/dev/null | grep wlan | sed 's/^/  /'
 fi
 echo
-echo "Serial ports:"
-echo "  FC:   $FC_SERIAL"
-echo "  GNSS: $GNSS_RTCM_SERIAL"
-echo "  >>> Run companion/tools/detect_ports.sh and update heli.env <<<"
+echo "Serial ports (native SoC UARTs):"
+echo "  FC:   $FC_SERIAL (UART0, header pins 8/10)"
+echo "  GNSS: $GNSS_RTCM_SERIAL (UART5, header pins 11/13)"
 echo
 echo "Services (enabled for boot, not started — serial ports are placeholders):"
 for svc in ntrip-client mavlink-router watchdog; do
@@ -378,17 +408,14 @@ for svc in ntrip-client mavlink-router watchdog; do
 done
 echo
 echo "Next steps:"
-echo "  1. Set WiFi passphrase:"
-echo "     sudo nmcli connection modify RTK-FIELD wifi-security.psk 'YOUR_PASSPHRASE'"
-echo "  2. Connect USB-UART adapters and identify serial ports:"
-echo "     ./companion/tools/detect_ports.sh"
-echo "  3. Edit serial ports and NTRIP credentials:"
+echo "  1. Edit NTRIP credentials:"
 echo "     sudo nano $SWARM_CONF_DIR/heli.env"
-echo "  4. Regenerate mavlink-router config:"
-echo "     sudo ./companion/tools/set_heli_id.sh $HELI_ID"
-echo "  5. Start services:"
+echo "  2. Reboot to activate UART5 overlay + console fix:"
+echo "     sudo reboot"
+echo "  3. Wire FC to header pins 8/10 (UART0), GNSS to pins 11/13 (UART5)"
+echo "  4. Start services:"
 echo "     sudo systemctl start ntrip-client mavlink-router"
-echo "  6. Run smoketest:"
+echo "  5. Run smoketest:"
 echo "     ./companion/tools/bench_smoketest.sh"
-echo "  7. Set ArduPilot SYSID_THISMAV=$SYSID on the flight controller"
+echo "  6. Set ArduPilot SYSID_THISMAV=$SYSID on the flight controller"
 echo

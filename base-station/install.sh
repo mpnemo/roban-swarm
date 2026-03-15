@@ -58,6 +58,22 @@ if [ -z "$LAN_NIC" ]; then
 fi
 info "Using LAN interface: $LAN_NIC"
 
+# --- Detect WiFi interface ---
+WIFI_NIC=""
+for iface in /sys/class/net/*; do
+    iface_name=$(basename "$iface")
+    if [ -d "$iface/wireless" ] || [ -d "$iface/phy80211" ]; then
+        WIFI_NIC="$iface_name"
+        break
+    fi
+done
+
+if [ -z "$WIFI_NIC" ]; then
+    warn "Could not auto-detect WiFi NIC. Defaulting to wlp3s0."
+    WIFI_NIC="wlp3s0"
+fi
+info "Using WiFi interface: $WIFI_NIC"
+
 # --- Install packages ---
 info "Updating apt and installing packages..."
 export DEBIAN_FRONTEND=noninteractive
@@ -123,7 +139,6 @@ network:
         addresses: [192.168.50.1]
       optional: true
       link-local: []
-      activation-mode: manual
 EOF
 
 # Force IP assignment even if cable is not connected.
@@ -263,11 +278,27 @@ systemctl daemon-reload
 systemctl enable mavlink-hub
 systemctl start mavlink-hub || warn "mavlink-hub start failed — check config"
 
+# --- Configure IP forwarding (sysctl) ---
+info "Configuring IP forwarding for NAT..."
+cat > /etc/sysctl.d/90-roban-swarm.conf <<EOF
+# Roban Swarm — enable IP forwarding for companion internet access
+net.ipv4.ip_forward = 1
+
+# Disable reverse path filtering (needed for NAT forwarding)
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+EOF
+sysctl --system > /dev/null 2>&1 || true
+info "sysctl IP forwarding configured."
+
 # --- Configure firewall (nftables) ---
 info "Configuring nftables firewall..."
 
 mkdir -p /etc/nftables.d
-cp "$SCRIPT_DIR/config/firewall.nft" /etc/nftables.d/roban-swarm.nft
+# Install firewall rules with correct interface names substituted
+sed -e "s/enp2s0/${LAN_NIC}/g" -e "s/wlp3s0/${WIFI_NIC}/g" \
+    "$SCRIPT_DIR/config/firewall.nft" \
+    > /etc/nftables.d/roban-swarm.nft
 
 # Ensure /etc/nftables.conf includes our drop-in directory on boot.
 # Ubuntu's default nftables.conf does NOT include /etc/nftables.d/*.
