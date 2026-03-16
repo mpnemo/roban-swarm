@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Roban Swarm — Companion Install Script
-# Usage: sudo ./companion/install.sh --heli-id <01-10>
+# Usage: sudo ./companion/install.sh [--heli-id <01-10>]
 #
-# Installs and configures all companion services:
-#   - WiFi (NetworkManager)
-#   - NTRIP client (str2str from RTKLIB)
-#   - MAVLink router (mavlink-routerd)
-#   - Watchdog (optional)
+# Installs all companion software onto an Orange Pi Zero 2W.
+# If --heli-id is given, provisions immediately (no captive portal).
+# If omitted, installs the provisioning service for first-boot setup.
+#
+# Services installed:
+#   - roban-provision  (AP captive portal for first-boot config)
+#   - mavlink-router   (FC ↔ Base MAVLink)
+#   - ntrip-client     (RTCM corrections via str2str)
+#   - gps-bridge       (NMEA → MAVLink GPS_INPUT)
+#   - roban-watchdog   (service health monitor)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,18 +38,16 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
-            error "Unknown argument: $1\nUsage: $0 --heli-id <01-10>"
+            error "Unknown argument: $1\nUsage: $0 [--heli-id <01-10>]"
             ;;
     esac
 done
 
-if [ -z "$HELI_ID" ]; then
-    error "Missing required argument: --heli-id\nUsage: $0 --heli-id <01-10>"
-fi
-
-# Validate heli ID
-if ! echo "$HELI_ID" | grep -qE '^(0[1-9]|10)$'; then
-    error "Heli ID must be 01 through 10. Got: $HELI_ID"
+# Validate heli ID if provided
+if [ -n "$HELI_ID" ]; then
+    if ! echo "$HELI_ID" | grep -qE '^(0[1-9]|10)$'; then
+        error "Heli ID must be 01 through 10. Got: $HELI_ID"
+    fi
 fi
 
 # --- Pre-flight checks ---
@@ -57,25 +60,20 @@ if [ ! -f /etc/os-release ]; then
 fi
 
 . /etc/os-release
-info "Starting Roban Swarm companion install (Heli $HELI_ID)..."
+info "Starting Roban Swarm companion install..."
 info "OS: $PRETTY_NAME"
-
-# --- Derive values from heli ID ---
-HELI_NUM=$((10#$HELI_ID))
-UDP_PORT=$((14559 + HELI_NUM))
-CMD_PORT=$((14659 + HELI_NUM))
-EXPECTED_IP="192.168.50.$((100 + HELI_NUM))"
-SYSID=$((10 + HELI_NUM))
-BASE_IP="192.168.50.1"
-
-info "Heli $HELI_ID → IP=$EXPECTED_IP, Telemetry=$UDP_PORT, Cmd=$CMD_PORT, SYSID=$SYSID"
+if [ -n "$HELI_ID" ]; then
+    info "Heli ID: $HELI_ID (immediate provisioning)"
+else
+    info "No --heli-id given — will install provisioning service"
+fi
 
 # --- Install packages ---
 info "Updating apt and installing packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-    network-manager \
+    dnsmasq \
     rtklib \
     chrony \
     curl \
@@ -84,10 +82,10 @@ apt-get install -y -qq \
     net-tools \
     usbutils \
     > /dev/null 2>&1 || {
-    # rtklib may not be in default repos — try alternatives
-    warn "Some packages failed. Trying alternative install..."
+    # rtklib may not be in default repos
+    warn "Some packages failed. Trying without rtklib..."
     apt-get install -y -qq \
-        network-manager \
+        dnsmasq \
         chrony \
         curl \
         socat \
@@ -95,6 +93,11 @@ apt-get install -y -qq \
         usbutils \
         > /dev/null 2>&1
 }
+
+# Disable dnsmasq system service — we manage it ourselves during provisioning
+systemctl stop dnsmasq 2>/dev/null || true
+systemctl disable dnsmasq 2>/dev/null || true
+info "dnsmasq installed (system service disabled — managed by provisioning)"
 
 # Check if str2str is available
 if ! command -v str2str &>/dev/null; then
@@ -142,9 +145,6 @@ mkdir -p "$SWARM_OPT_DIR"
 mkdir -p /etc/mavlink-router
 
 # --- Configure native UARTs ---
-# OPi Zero 2W uses SoC UARTs on the 40-pin header (no USB-UART needed):
-#   UART0 (ttyS0) pins 8/10 (PH0/PH1) → flight controller MAVLink
-#   UART5 (ttyS5) pins 11/13 (PH2/PH3) → LC29H GNSS RTCM
 info "Configuring native UARTs..."
 
 # Enable UART5 overlay if not already set
@@ -187,12 +187,102 @@ systemctl disable serial-getty@ttyS0.service 2>/dev/null || true
 systemctl mask serial-getty@ttyS0.service 2>/dev/null || true
 info "serial-getty@ttyS0 disabled (UART0 free for MAVLink)"
 
-FC_SERIAL="/dev/ttyS0"
-GNSS_RTCM_SERIAL="/dev/ttyS5"
+# --- Install provisioning configs ---
+info "Installing provisioning configs..."
+cp "$SCRIPT_DIR/config/dnsmasq-setup.conf" "$SWARM_CONF_DIR/"
+info "Captive portal config installed to $SWARM_CONF_DIR/"
 
-# --- Create heli.env ---
-info "Creating heli.env..."
-cat > "$SWARM_CONF_DIR/heli.env" <<EOF
+# --- Install scripts ---
+info "Installing scripts to $SWARM_OPT_DIR/..."
+cp "$SCRIPT_DIR/tools/roban-provision.py" "$SWARM_OPT_DIR/"
+cp "$SCRIPT_DIR/tools/gps-bridge.py" "$SWARM_OPT_DIR/"
+chmod +x "$SWARM_OPT_DIR/roban-provision.py"
+chmod +x "$SWARM_OPT_DIR/gps-bridge.py"
+
+# --- Create watchdog script ---
+cat > "$SWARM_OPT_DIR/watchdog.sh" <<'WATCHDOG_EOF'
+#!/usr/bin/env bash
+# Roban Swarm watchdog — restart services if they fail
+set -euo pipefail
+
+CHECK_INTERVAL=30
+MAX_FAILURES=3
+
+mavlink_failures=0
+ntrip_failures=0
+gps_failures=0
+
+while true; do
+    sleep "$CHECK_INTERVAL"
+
+    for svc in mavlink-router ntrip-client gps-bridge; do
+        if ! systemctl is-active "$svc" &>/dev/null; then
+            eval "count=\${${svc//-/_}_failures:-0}"
+            count=$((count + 1))
+            eval "${svc//-/_}_failures=$count"
+            echo "$svc down (failure $count/$MAX_FAILURES)"
+            if [ "$count" -ge "$MAX_FAILURES" ]; then
+                echo "Restarting $svc..."
+                systemctl restart "$svc" || true
+                eval "${svc//-/_}_failures=0"
+            fi
+        else
+            eval "${svc//-/_}_failures=0"
+        fi
+    done
+done
+WATCHDOG_EOF
+chmod +x "$SWARM_OPT_DIR/watchdog.sh"
+
+# --- Install systemd services ---
+info "Installing systemd services..."
+
+cp "$SCRIPT_DIR/systemd/roban-provision.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/ntrip-client.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/mavlink-router.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/gps-bridge.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/watchdog.service" /etc/systemd/system/roban-watchdog.service
+
+systemctl daemon-reload
+systemctl enable roban-provision
+systemctl enable ntrip-client
+systemctl enable mavlink-router
+systemctl enable gps-bridge
+systemctl enable roban-watchdog 2>/dev/null || true
+info "All services enabled"
+
+# --- Configure chrony (NTP client) ---
+info "Configuring chrony to use base station as NTP source..."
+CHRONY_CONF="/etc/chrony/chrony.conf"
+if [ -f "$CHRONY_CONF" ]; then
+    if ! grep -q "192.168.50.1" "$CHRONY_CONF"; then
+        echo "" >> "$CHRONY_CONF"
+        echo "# Roban Swarm — use base station as NTP server" >> "$CHRONY_CONF"
+        echo "server 192.168.50.1 iburst prefer" >> "$CHRONY_CONF"
+    fi
+    systemctl restart chrony 2>/dev/null || true
+fi
+
+# --- Set tool scripts executable ---
+chmod +x "$SCRIPT_DIR/tools/"*.sh 2>/dev/null || true
+
+# --- Immediate provisioning (if --heli-id given) ---
+if [ -n "$HELI_ID" ]; then
+    info "Provisioning immediately as Heli $HELI_ID..."
+
+    HELI_NUM=$((10#$HELI_ID))
+    UDP_PORT=$((14559 + HELI_NUM))
+    CMD_PORT=$((14659 + HELI_NUM))
+    EXPECTED_IP="192.168.50.$((100 + HELI_NUM))"
+    SYSID=$((10 + HELI_NUM))
+    BASE_IP="192.168.50.1"
+    FC_SERIAL="/dev/ttyS0"
+    FC_BAUD="115200"
+    GNSS_RTCM_SERIAL="/dev/ttyS5"
+    GNSS_RTCM_BAUD="115200"
+
+    # Write heli.env
+    cat > "$SWARM_CONF_DIR/heli.env" <<EOF
 # Roban Swarm — Heli $HELI_ID environment
 # Generated by install.sh on $(date)
 
@@ -207,68 +297,23 @@ WIFI_SSID=Robanswarm
 NTRIP_PORT=2101
 NTRIP_MOUNT=BASE
 NTRIP_USER=admin
-NTRIP_PASS=REPLACE_WITH_NTRIP_PASSWORD
+NTRIP_PASS=roban
 
 # Serial ports — native SoC UARTs on 40-pin header
-# UART0 (pins 8/10, PH0/PH1) → Flight controller MAVLink
 FC_SERIAL=$FC_SERIAL
-FC_BAUD=115200
-# UART5 (pins 11/13, PH2/PH3) → LC29H GNSS RTCM
+FC_BAUD=$FC_BAUD
 GNSS_RTCM_SERIAL=$GNSS_RTCM_SERIAL
-GNSS_RTCM_BAUD=115200
+GNSS_RTCM_BAUD=$GNSS_RTCM_BAUD
 
 # MAVLink
-# Telemetry outbound to base hub
 UDP_PORT=$UDP_PORT
-# Command inbound from base hub (deterministic return path)
 CMD_PORT=$CMD_PORT
+SYSID=$SYSID
 EOF
-chmod 600 "$SWARM_CONF_DIR/heli.env"
-info "heli.env written to $SWARM_CONF_DIR/heli.env"
+    chmod 600 "$SWARM_CONF_DIR/heli.env"
 
-# --- Configure WiFi ---
-info "Configuring WiFi connection profile..."
-
-# Create NetworkManager connection (passphrase must be set manually)
-NM_CONN_DIR="/etc/NetworkManager/system-connections"
-mkdir -p "$NM_CONN_DIR"
-
-cat > "$NM_CONN_DIR/RTK-FIELD.nmconnection" <<EOF
-[connection]
-id=RTK-FIELD
-type=wifi
-autoconnect=true
-autoconnect-priority=100
-
-[wifi]
-mode=infrastructure
-ssid=RTK-FIELD
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=REPLACE_WITH_WIFI_PASSPHRASE
-
-[ipv4]
-method=auto
-
-[ipv6]
-method=disabled
-EOF
-chmod 600 "$NM_CONN_DIR/RTK-FIELD.nmconnection"
-info "WiFi profile created. Set passphrase in $NM_CONN_DIR/RTK-FIELD.nmconnection"
-
-# Reload NetworkManager
-if systemctl is-active NetworkManager &>/dev/null; then
-    nmcli connection reload 2>/dev/null || true
-fi
-
-# --- Configure mavlink-router ---
-info "Configuring MAVLink router..."
-
-# Read serial port from env
-source "$SWARM_CONF_DIR/heli.env"
-
-cat > /etc/mavlink-router/main.conf <<EOF
+    # Write mavlink-router config
+    cat > /etc/mavlink-router/main.conf <<EOF
 # Roban Swarm — Heli $HELI_ID mavlink-router config
 # Generated by install.sh on $(date)
 
@@ -277,145 +322,88 @@ TcpServerPort = 0
 ReportStats = false
 MavlinkDialect = ardupilotmega
 
-# Flight controller serial connection
 [UartEndpoint fc]
 Device = $FC_SERIAL
 Baud = $FC_BAUD
 
-# Telemetry outbound to base station hub
 [UdpEndpoint to_base]
 Mode = Normal
 Address = $BASE_IP
 Port = $UDP_PORT
 
-# Command inbound from base station hub (deterministic return path)
 [UdpEndpoint from_base]
 Mode = Server
 Address = 0.0.0.0
 Port = $CMD_PORT
+
+[UdpEndpoint gps_bridge]
+Mode = Server
+Address = 127.0.0.1
+Port = 14570
 EOF
 
-# --- Install systemd services ---
-info "Installing systemd services..."
+    # Mark provisioned (skips captive portal on boot)
+    cat > "$SWARM_CONF_DIR/provisioned" <<EOF
+heli_id=$HELI_ID
+provisioned=$(date '+%Y-%m-%d %H:%M:%S')
+EOF
 
-cp "$SCRIPT_DIR/systemd/ntrip-client.service" /etc/systemd/system/
-cp "$SCRIPT_DIR/systemd/mavlink-router.service" /etc/systemd/system/
-cp "$SCRIPT_DIR/systemd/watchdog.service" /etc/systemd/system/
-
-# Create watchdog script
-cat > "$SWARM_OPT_DIR/watchdog.sh" <<'WATCHDOG_EOF'
-#!/usr/bin/env bash
-# Roban Swarm watchdog — restart services if they fail
-set -euo pipefail
-
-CHECK_INTERVAL=30  # seconds
-MAX_FAILURES=3
-
-mavlink_failures=0
-ntrip_failures=0
-
-while true; do
-    sleep "$CHECK_INTERVAL"
-
-    # Check mavlink-router
-    if ! systemctl is-active mavlink-router &>/dev/null; then
-        mavlink_failures=$((mavlink_failures + 1))
-        echo "mavlink-router down (failure $mavlink_failures/$MAX_FAILURES)"
-        if [ "$mavlink_failures" -ge "$MAX_FAILURES" ]; then
-            echo "Restarting mavlink-router..."
-            systemctl restart mavlink-router || true
-            mavlink_failures=0
-        fi
-    else
-        mavlink_failures=0
-    fi
-
-    # Check ntrip-client
-    if ! systemctl is-active ntrip-client &>/dev/null; then
-        ntrip_failures=$((ntrip_failures + 1))
-        echo "ntrip-client down (failure $ntrip_failures/$MAX_FAILURES)"
-        if [ "$ntrip_failures" -ge "$MAX_FAILURES" ]; then
-            echo "Restarting ntrip-client..."
-            systemctl restart ntrip-client || true
-            ntrip_failures=0
-        fi
-    else
-        ntrip_failures=0
-    fi
-done
-WATCHDOG_EOF
-chmod +x "$SWARM_OPT_DIR/watchdog.sh"
-
-systemctl daemon-reload
-systemctl enable ntrip-client
-systemctl enable mavlink-router
-systemctl enable watchdog 2>/dev/null || true
-
-# Don't start services now — serial ports are likely still placeholders.
-# Services are enabled and will start automatically on next boot once
-# heli.env has real serial port paths configured.
-info "Services installed and enabled (will auto-start on boot)."
-info "Not started now because serial ports are placeholders."
-info "After configuring heli.env, start with: sudo systemctl start ntrip-client mavlink-router"
-
-# --- Install tools ---
-info "Setting tool scripts executable..."
-chmod +x "$SCRIPT_DIR/tools/"*.sh
-
-# --- Configure chrony (NTP client) ---
-info "Configuring chrony to use base station as NTP source..."
-CHRONY_CONF="/etc/chrony/chrony.conf"
-if [ -f "$CHRONY_CONF" ]; then
-    # Add base station as preferred NTP server
-    if ! grep -q "192.168.50.1" "$CHRONY_CONF"; then
-        echo "" >> "$CHRONY_CONF"
-        echo "# Roban Swarm — use base station as NTP server" >> "$CHRONY_CONF"
-        echo "server 192.168.50.1 iburst prefer" >> "$CHRONY_CONF"
-    fi
-    systemctl restart chrony 2>/dev/null || true
+    info "Heli $HELI_ID provisioned and marked"
 fi
 
 # --- Print summary ---
 echo
 echo "============================================"
 echo "  Roban Swarm Companion Install Complete"
-echo "  Heli ID: $HELI_ID"
 echo "============================================"
 echo
-echo "Identity:"
-echo "  Heli ID:     $HELI_ID"
-echo "  Expected IP: $EXPECTED_IP"
-echo "  Telemetry:   $UDP_PORT (outbound to base)"
-echo "  Command:     $CMD_PORT (inbound from base)"
-echo "  SYSID:       $SYSID (set this on the FC!)"
-echo
-echo "WiFi:"
-echo "  SSID: RTK-FIELD"
-echo "  >>> Set passphrase in $NM_CONN_DIR/RTK-FIELD.nmconnection <<<"
-if command -v nmcli &>/dev/null; then
-    nmcli -t -f DEVICE,STATE dev status 2>/dev/null | grep wlan | sed 's/^/  /'
+if [ -n "$HELI_ID" ]; then
+    HELI_NUM=$((10#$HELI_ID))
+    echo "Identity:"
+    echo "  Heli ID:     $HELI_ID"
+    echo "  Expected IP: 192.168.50.$((100 + HELI_NUM))"
+    echo "  Telemetry:   $((14559 + HELI_NUM)) (outbound to base)"
+    echo "  Command:     $((14659 + HELI_NUM)) (inbound from base)"
+    echo "  SYSID:       $((10 + HELI_NUM)) (set this on the FC!)"
+    echo
+    echo "Provisioned: YES"
+    echo "  All configs written. Services will start on reboot."
+else
+    echo "Provisioned: NO (first-boot setup enabled)"
+    echo
+    echo "On first boot, the OPi will:"
+    echo "  1. Start AP: SSID='RobanHeli-SETUP', password='robansetup'"
+    echo "  2. Serve config form at http://192.168.4.1"
+    echo "  3. After form submit → save config + reboot into normal mode"
+    echo
+    echo "To provision manually instead:"
+    echo "  sudo $0 --heli-id <01-10>"
 fi
 echo
 echo "Serial ports (native SoC UARTs):"
-echo "  FC:   $FC_SERIAL (UART0, header pins 8/10)"
-echo "  GNSS: $GNSS_RTCM_SERIAL (UART5, header pins 11/13)"
+echo "  FC:   /dev/ttyS0 (UART0, header pins 8/10)"
+echo "  GNSS: /dev/ttyS5 (UART5, header pins 11/13)"
 echo
-echo "Services (enabled for boot, not started — serial ports are placeholders):"
-for svc in ntrip-client mavlink-router watchdog; do
+echo "Services:"
+for svc in roban-provision mavlink-router ntrip-client gps-bridge roban-watchdog; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
     enabled=$(systemctl is-enabled "$svc" 2>/dev/null || echo "disabled")
     printf "  %-20s active=%-12s enabled=%s\n" "$svc" "$status" "$enabled"
 done
 echo
+echo "Root access: root / dopedope (for HDMI+keyboard debug)"
+echo
+echo "Factory reset: rm /etc/roban-swarm/provisioned && reboot"
+echo
 echo "Next steps:"
-echo "  1. Edit NTRIP credentials:"
-echo "     sudo nano $SWARM_CONF_DIR/heli.env"
-echo "  2. Reboot to activate UART5 overlay + console fix:"
-echo "     sudo reboot"
-echo "  3. Wire FC to header pins 8/10 (UART0), GNSS to pins 11/13 (UART5)"
-echo "  4. Start services:"
-echo "     sudo systemctl start ntrip-client mavlink-router"
-echo "  5. Run smoketest:"
-echo "     ./companion/tools/bench_smoketest.sh"
-echo "  6. Set ArduPilot SYSID_THISMAV=$SYSID on the flight controller"
+if [ -z "$HELI_ID" ]; then
+    echo "  1. Write this SD image to all 10 cards"
+    echo "  2. Boot each OPi → connect to 'RobanHeli-SETUP' WiFi"
+    echo "  3. Open browser → fill form → OPi reboots into normal mode"
+else
+    echo "  1. Reboot to activate UART5 overlay + console fix"
+    echo "  2. Wire FC to header pins 8/10 (UART0)"
+    echo "  3. Wire GNSS to header pins 11/13 (UART5)"
+    echo "  4. Set ArduPilot SYSID_THISMAV=$((10 + 10#$HELI_ID)) on the FC"
+fi
 echo

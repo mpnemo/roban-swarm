@@ -1,6 +1,6 @@
 [Unit]
 Description=Roban Swarm MAVLink Router (FC ↔ Base)
-After=network-online.target NetworkManager-wait-online.service
+After=network-online.target systemd-networkd-wait-online.service
 Wants=network-online.target
 
 [Service]

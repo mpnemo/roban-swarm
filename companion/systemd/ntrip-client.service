@@ -1,6 +1,6 @@
 [Unit]
 Description=Roban Swarm NTRIP Client (str2str → LC29H)
-After=network-online.target NetworkManager-wait-online.service
+After=network-online.target systemd-networkd-wait-online.service
 Wants=network-online.target
 
 [Service]

@@ -410,7 +410,93 @@ entirely inside the LC29HEA — ArduPilot just receives the corrected position.
 
 ---
 
-## Current Status (as of 2026-03-14)
+## Session 8 — 2026-03-16 (Companion Provisioning System)
+
+**Goal:** Build AP-mode captive portal so each OPi can be provisioned on
+first boot without needing to edit ext4 SD cards from a PC.
+
+### What was built
+
+#### Provisioning flow
+1. OPi boots → `roban-provision.service` checks `/etc/roban-swarm/provisioned`
+2. **Not provisioned →** setup mode:
+   - Stops operational services (mavlink-router, ntrip-client, gps-bridge)
+   - Switches `wlan0` to AP mode via hostapd (`RobanHeli-SETUP` / `robansetup`)
+   - Starts dnsmasq for DHCP (192.168.4.10-50) + DNS wildcard → captive portal
+   - Serves web form on port 80 (pure stdlib http.server)
+   - User connects phone/laptop → selects Heli ID, enters WiFi SSID/password
+   - On submit: writes `heli.env`, netplan WiFi config, mavlink-router config,
+     marks provisioned, reboots into normal mode
+3. **Already provisioned →** service exits immediately, normal boot continues
+
+#### Files created
+- `companion/tools/roban-provision.py` — Python stdlib web server + captive portal
+- `companion/config/hostapd-setup.conf` — AP mode config (WPA2, channel 6)
+- `companion/config/dnsmasq-setup.conf` — DHCP pool + DNS wildcard redirect
+- `companion/systemd/roban-provision.service` — boot-time provisioning check
+
+#### install.sh rewrite
+- `--heli-id` now **optional**: if omitted, installs provisioning service for
+  first-boot setup; if given, provisions immediately (no captive portal)
+- Added `hostapd` and `dnsmasq` to apt packages (system services disabled,
+  managed by provisioning script)
+- Added `gps-bridge.py` install + `gps-bridge.service` enable
+- Renamed watchdog service to `roban-watchdog` (avoid conflict with system watchdog)
+- Updated service dependencies: `networkd` instead of `NetworkManager`
+- Preset defaults: NTRIP password `roban`, WiFi SSID `Robanswarm`,
+  serial ports `ttyS0`/`ttyS5` @ 115200
+- Summary now shows root credentials (`root` / `dopedope`) for HDMI debug
+
+#### Other fixes
+- `ntrip-client.service` and `mavlink-router.service`: replaced
+  `NetworkManager-wait-online.service` with `systemd-networkd-wait-online.service`
+
+### Testing on Heli01
+
+Deployed to Heli01, factory-reset (`rm /etc/roban-swarm/provisioned`), rebooted.
+
+#### hostapd failure — switched to wpa_supplicant AP mode
+The Unisoc WiFi driver on OPi Zero 2W does **not** support hostapd's nl80211
+AP interface ("Could not connect to kernel driver", "Failed to set beacon
+parameters"). AP mode IS listed in `iw list` capabilities, but hostapd
+can't use it.
+
+**Fix:** Replaced hostapd with `wpa_supplicant` in AP mode (`mode=2`):
+1. Set interface type to `__ap` via `iw dev wlan0 set type __ap` (required
+   before wpa_supplicant can start AP)
+2. Write `/tmp/roban-ap.conf` with `mode=2`, `frequency=2437`
+3. Run `wpa_supplicant -B -i wlan0 -c /tmp/roban-ap.conf`
+4. Start dnsmasq for DHCP + DNS wildcard
+
+SSID `RobanHeli-SETUP` visible and connectable from phone. Captive portal
+web form loaded at `http://192.168.4.1`, form submitted successfully.
+
+After provisioning submit, OPi rebooted into normal client mode, connected
+to Robanswarm WiFi, and was reachable via SSH at 192.168.50.101.
+
+#### Files updated
+- `roban-provision.py`: `start_ap_mode()` uses wpa_supplicant instead of
+  hostapd; `stop_ap_mode()` restores managed mode via `iw`; kills stale
+  dnsmasq before starting; stops NetworkManager during setup
+- `install.sh`: removed `hostapd` from apt packages, removed hostapd config
+  copy and service disable
+
+#### hostapd-setup.conf retained in repo
+Kept for reference but no longer deployed or used.
+
+### Factory reset
+Delete `/etc/roban-swarm/provisioned` and reboot → back to setup mode.
+
+### Phase 3 workflow (scale to 10)
+1. Flash production SD image (with install.sh already run, no `provisioned` flag)
+2. Boot OPi → it creates AP `RobanHeli-SETUP`
+3. Connect phone → fill form (Heli ID, WiFi SSID/pass)
+4. OPi saves config + reboots into normal WiFi client mode
+5. Repeat for all 10 boards
+
+---
+
+## Current Status (as of 2026-03-16)
 
 ### Phase completion
 
@@ -419,17 +505,18 @@ entirely inside the LC29HEA — ArduPilot just receives the corrected position.
 | Phase 0: Pre-hardware | Done | OS images ready, WiFi band confirmed (2.4 GHz Unisoc on Zero 2W) |
 | Phase 1: Base station | Done | All services running, NAT/sysctl persisted, NTRIP caster active |
 | Phase 2: First companion | ~95% done | All software running, needs FC wiring + outdoor RTK test |
-| Phase 3: Scale to 10 | Not started | Need provisioning system (AP mode + web portal) |
+| Phase 3: Scale to 10 | In progress | Provisioning system built and tested on Heli01 |
 | Phase 4: Field RTK | Not started | |
 | Phase 5: Soak test | Not started | |
 | Phase 6: Hardening | Not started | |
 
 ### Immediate next steps
-1. Wire FC to header pins 8 (TX) / 10 (RX) / 9 (GND) — UART0
-2. Set ArduPilot `GPS_TYPE=14` (MAVLink GPS), `SYSID_THISMAV=11`
-3. Start ntrip-client: `systemctl start ntrip-client`
-4. Outdoor test: verify RTK fix (sky view needed)
-5. Design companion provisioning system for fleet deployment
+1. ~~Test provisioning on Heli01~~ — **Done** (Session 8)
+2. Wire FC to header pins 8 (TX) / 10 (RX) / 9 (GND) — UART0
+3. Set ArduPilot `GPS_TYPE=14` (MAVLink GPS), `SYSID_THISMAV=11`
+4. Start ntrip-client: `systemctl start ntrip-client`
+5. Outdoor test: verify RTK fix (sky view needed)
+6. Flash production image + provision remaining 9 boards
 
 ### Connection details
 - **Base station SSH:** `ssh roban-swarm@192.168.3.119` (home WiFi)

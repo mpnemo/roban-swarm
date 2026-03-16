@@ -1,0 +1,18 @@
+[Unit]
+Description=Roban Swarm Provisioning (AP + Captive Portal)
+# Run early, before operational services
+Before=mavlink-router.service ntrip-client.service gps-bridge.service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /opt/roban-swarm/roban-provision.py
+# Exit code 0 = already provisioned (normal boot)
+# Stays running = setup mode (serving web form)
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
