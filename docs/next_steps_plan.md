@@ -17,7 +17,7 @@ base station software foundation plan (web UI, swarm controller, mode switching)
 Phase 0  Pre-hardware               ✅ DONE
 Phase 1  Base station                ✅ DONE
 Phase 2  First companion             ✅ DONE (outdoor RTK test nice-to-have)
-Phase 2β Foundation (base station)   NOT STARTED — web UI, swarm controller
+Phase 2β Foundation (base station)   IN PROGRESS — FastAPI + fleet API + web UI deployed
 Phase 3  Scale to 10                 NOT STARTED — flash + provision 9 boards
 Phase 4  Field RTK validation        NOT STARTED
 Phase 5  Soak test                   NOT STARTED

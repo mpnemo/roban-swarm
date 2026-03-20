@@ -46,6 +46,9 @@ table inet roban_swarm {
         # MAVLink heli command return
         udp dport 14660-14669 accept
 
+        # Roban controller web UI (LAN only)
+        iifname "enp2s0" tcp dport 8080 accept
+
         # Log and drop everything else
         log prefix "nft-drop: " drop
     }

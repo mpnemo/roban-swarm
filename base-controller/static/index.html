@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roban Swarm Controller</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Roban Swarm</h1>
+        <div id="mode-badge" class="badge badge-config">CONFIG</div>
+    </header>
+
+    <nav>
+        <button class="nav-btn active" data-page="dashboard">Dashboard</button>
+        <button class="nav-btn" data-page="fleet">Fleet</button>
+        <button class="nav-btn" data-page="config">Config</button>
+    </nav>
+
+    <main>
+        <!-- Dashboard page -->
+        <section id="page-dashboard" class="page active">
+            <h2>Fleet Overview</h2>
+            <div id="fleet-grid" class="fleet-grid">
+                <p class="placeholder">No vehicles registered. Go to Fleet to add helis.</p>
+            </div>
+        </section>
+
+        <!-- Fleet manager page -->
+        <section id="page-fleet" class="page">
+            <h2>Fleet Manager</h2>
+            <div class="fleet-form">
+                <input type="number" id="add-heli-id" placeholder="Heli ID (1-99)" min="1" max="99">
+                <input type="text" id="add-heli-mac" placeholder="MAC (aa:bb:cc:dd:ee:ff)">
+                <input type="text" id="add-heli-name" placeholder="Name (optional)">
+                <button id="btn-add-heli">Add</button>
+            </div>
+            <table id="fleet-table">
+                <thead>
+                    <tr>
+                        <th>ID</th><th>Name</th><th>MAC</th><th>IP</th>
+                        <th>SysID</th><th>Port</th><th>Status</th><th></th>
+                    </tr>
+                </thead>
+                <tbody id="fleet-tbody"></tbody>
+            </table>
+            <button id="btn-apply" class="btn-primary">Apply Changes</button>
+        </section>
+
+        <!-- Config console page -->
+        <section id="page-config" class="page">
+            <h2>Config Console</h2>
+            <div class="config-panel">
+                <label>Select Heli:
+                    <select id="config-heli-select"></select>
+                </label>
+                <button id="btn-connect-gcs" class="btn-primary">Connect to GCS</button>
+                <button id="btn-production" class="btn-secondary">Production Mode</button>
+            </div>
+            <div id="config-telemetry" class="telemetry-panel">
+                <p class="placeholder">Select a heli and click Connect to GCS.</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <span id="connection-status">Connecting...</span>
+        <span id="uptime"></span>
+    </footer>
+
+    <script src="/js/ws.js"></script>
+    <script src="/js/dashboard.js"></script>
+    <script src="/js/fleet.js"></script>
+    <script src="/js/config.js"></script>
+</body>
+</html>

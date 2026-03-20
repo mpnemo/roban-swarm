@@ -1,0 +1,217 @@
+/* Roban Swarm Controller — minimal dark theme */
+:root {
+    --bg: #1a1a2e;
+    --bg2: #16213e;
+    --bg3: #0f3460;
+    --fg: #e0e0e0;
+    --fg2: #a0a0a0;
+    --accent: #e94560;
+    --green: #00c851;
+    --yellow: #ffbb33;
+    --red: #ff4444;
+    --blue: #33b5e5;
+    --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, 'Segoe UI', Roboto, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--bg3);
+}
+header h1 { font-size: 1.3rem; font-weight: 600; }
+
+.badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.badge-config { background: var(--blue); color: #000; }
+.badge-production { background: var(--green); color: #000; }
+
+nav {
+    display: flex;
+    gap: 4px;
+    padding: 8px 24px;
+    background: var(--bg2);
+}
+.nav-btn {
+    background: transparent;
+    border: none;
+    color: var(--fg2);
+    padding: 8px 16px;
+    cursor: pointer;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+}
+.nav-btn:hover { background: var(--bg3); color: var(--fg); }
+.nav-btn.active { background: var(--bg3); color: var(--fg); font-weight: 600; }
+
+main { padding: 24px; }
+
+.page { display: none; }
+.page.active { display: block; }
+
+h2 { margin-bottom: 16px; font-size: 1.1rem; }
+
+/* Fleet grid (dashboard) */
+.fleet-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+}
+
+.heli-card {
+    background: var(--bg2);
+    border: 1px solid var(--bg3);
+    border-radius: var(--radius);
+    padding: 16px;
+}
+.heli-card.online { border-left: 3px solid var(--green); }
+.heli-card.offline { border-left: 3px solid var(--red); opacity: 0.7; }
+
+.heli-card .heli-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.heli-card .heli-name { font-weight: 700; font-size: 1rem; }
+.heli-card .heli-status {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.heli-status.online { background: var(--green); }
+.heli-status.offline { background: var(--red); }
+
+.heli-card .heli-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--fg2);
+}
+.heli-card .heli-stats .label { color: var(--fg2); }
+.heli-card .heli-stats .value { color: var(--fg); font-weight: 500; }
+
+.heli-card .heli-actions { margin-top: 10px; }
+.heli-card .heli-actions button {
+    background: var(--bg3);
+    border: none;
+    color: var(--fg);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+}
+.heli-card .heli-actions button:hover { background: var(--accent); }
+
+/* Fleet table */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+}
+th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--bg3);
+    font-size: 0.85rem;
+}
+th { color: var(--fg2); font-weight: 600; }
+td { color: var(--fg); }
+
+/* Forms */
+.fleet-form {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+input, select {
+    background: var(--bg2);
+    border: 1px solid var(--bg3);
+    color: var(--fg);
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+}
+input:focus, select:focus { outline: 1px solid var(--blue); }
+
+.btn-primary {
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    padding: 8px 20px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-weight: 600;
+}
+.btn-primary:hover { opacity: 0.9; }
+
+.btn-secondary {
+    background: var(--bg3);
+    border: 1px solid var(--fg2);
+    color: var(--fg);
+    padding: 8px 20px;
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+.btn-delete {
+    background: transparent;
+    border: none;
+    color: var(--red);
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+
+/* Config panel */
+.config-panel {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+.telemetry-panel {
+    background: var(--bg2);
+    border-radius: var(--radius);
+    padding: 16px;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+
+.placeholder { color: var(--fg2); font-style: italic; }
+
+footer {
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 24px;
+    background: var(--bg2);
+    border-top: 1px solid var(--bg3);
+    font-size: 0.75rem;
+    color: var(--fg2);
+}
+
+/* GPS fix colors */
+.fix-rtk { color: var(--green); }
+.fix-3d { color: var(--blue); }
+.fix-none { color: var(--red); }

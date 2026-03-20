@@ -1,6 +1,6 @@
 # Phase 2β — Base Station Foundation Plan
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS — Steps 1-2, 4-6 done (FastAPI + fleet API + web UI deployed)
 **Depends on:** Phase 2 complete (outdoor RTK test outstanding)
 **Blocks:** Phase 3 (scale to 10)
 
