@@ -15,6 +15,7 @@
     <nav>
         <button class="nav-btn active" data-page="dashboard">Dashboard</button>
         <button class="nav-btn" data-page="fleet">Fleet</button>
+        <button class="nav-btn" data-page="show">Show</button>
         <button class="nav-btn" data-page="config">Config</button>
     </nav>
 
@@ -48,6 +49,45 @@
             <button id="btn-apply" class="btn-primary">Apply Changes</button>
         </section>
 
+        <!-- Show control page -->
+        <section id="page-show" class="page">
+            <h2>Show Control</h2>
+            <div class="show-upload">
+                <input type="file" id="show-file-input" accept=".json">
+                <button id="btn-upload-show" class="btn-primary">Upload Show</button>
+                <span id="show-file-name"></span>
+            </div>
+            <div id="show-info" class="show-info" style="display:none">
+                <div class="show-meta">
+                    <span id="show-name-label"></span>
+                    <span id="show-duration-label"></span>
+                    <span id="show-tracks-label"></span>
+                </div>
+                <div class="show-state-bar">
+                    <span>State: <strong id="show-state">IDLE</strong></span>
+                    <span id="show-elapsed"></span>
+                </div>
+                <div id="show-progress-bar" class="progress-bar">
+                    <div id="show-progress-fill" class="progress-fill"></div>
+                </div>
+            </div>
+            <div id="show-readiness" style="display:none">
+                <h3>Pre-flight Checks</h3>
+                <div id="readiness-list"></div>
+            </div>
+            <div class="show-controls">
+                <button id="btn-arm" class="btn-secondary" disabled>Arm</button>
+                <button id="btn-go" class="btn-primary" disabled>GO</button>
+                <button id="btn-pause" class="btn-secondary" disabled>Pause</button>
+                <button id="btn-resume" class="btn-secondary" disabled>Resume</button>
+                <button id="btn-show-stop" class="btn-danger" disabled>STOP</button>
+            </div>
+            <div id="show-log" class="show-log">
+                <h3>Event Log</h3>
+                <div id="show-log-entries"></div>
+            </div>
+        </section>
+
         <!-- Config console page -->
         <section id="page-config" class="page">
             <h2>Config Console</h2>
@@ -72,6 +112,7 @@
     <script src="/js/ws.js"></script>
     <script src="/js/dashboard.js"></script>
     <script src="/js/fleet.js"></script>
+    <script src="/js/show.js"></script>
     <script src="/js/config.js"></script>
 </body>
 </html>

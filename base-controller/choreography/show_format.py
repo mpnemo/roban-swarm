@@ -92,3 +92,55 @@ class ShowFile(BaseModel):
                         f"wp[{i-1}] t={track.waypoints[i-1].t}s"
                     )
         return errors
+
+    def get_heli_ids(self) -> list[int]:
+        """List all heli IDs in this show."""
+        return [t.heli_id for t in self.tracks]
+
+    def validate_safety(self, min_separation_m: float = 3.0) -> list[str]:
+        """Static check: verify no two tracks have waypoints too close at shared times."""
+        import math
+        warnings = []
+        for i, t1 in enumerate(self.tracks):
+            for t2 in self.tracks[i + 1:]:
+                # Check at each waypoint time from both tracks
+                times = sorted(set(
+                    [w.t for w in t1.waypoints] + [w.t for w in t2.waypoints]
+                ))
+                for t in times:
+                    p1 = self._pos_at(t1, t)
+                    p2 = self._pos_at(t2, t)
+                    if p1 and p2:
+                        dist = math.sqrt(
+                            (p1.n - p2.n) ** 2 +
+                            (p1.e - p2.e) ** 2 +
+                            (p1.d - p2.d) ** 2
+                        )
+                        if dist < min_separation_m:
+                            warnings.append(
+                                f"Heli{t1.heli_id} and Heli{t2.heli_id} "
+                                f"within {dist:.1f}m at t={t:.1f}s"
+                            )
+        return warnings
+
+    @staticmethod
+    def _pos_at(track: 'HeliTrack', t: float) -> 'Vec3 | None':
+        """Get interpolated position of a track at time t."""
+        wps = track.waypoints
+        if not wps:
+            return None
+        if t <= wps[0].t:
+            return wps[0].pos
+        for i in range(len(wps) - 1):
+            if wps[i].t <= t <= wps[i + 1].t:
+                dt = wps[i + 1].t - wps[i].t
+                if dt <= 0:
+                    return wps[i + 1].pos
+                frac = (t - wps[i].t) / dt
+                p0, p1 = wps[i].pos, wps[i + 1].pos
+                return Vec3(
+                    n=p0.n + (p1.n - p0.n) * frac,
+                    e=p0.e + (p1.e - p0.e) * frac,
+                    d=p0.d + (p1.d - p0.d) * frac,
+                )
+        return wps[-1].pos

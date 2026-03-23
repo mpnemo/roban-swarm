@@ -215,3 +215,37 @@ footer {
 .fix-rtk { color: var(--green); }
 .fix-3d { color: var(--blue); }
 .fix-none { color: var(--red); }
+
+/* --- Show Control --- */
+.show-upload { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.show-upload input[type="file"] { flex: 1; }
+.show-info { background: var(--bg2); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.show-meta { display: flex; gap: 24px; margin-bottom: 8px; font-size: 0.9rem; color: var(--fg2); }
+.show-state-bar { display: flex; gap: 24px; margin-bottom: 8px; }
+.state-idle { color: var(--fg2); }
+.state-loaded { color: var(--blue); }
+.state-armed { color: #ff9800; }
+.state-staging { color: #ff9800; }
+.state-running { color: var(--green); }
+.state-paused { color: #ff9800; }
+.state-done { color: var(--green); }
+.state-error { color: var(--red); }
+
+.progress-bar { width: 100%; height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); transition: width 0.3s; width: 0; }
+
+.show-controls { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+.btn-danger { background: var(--red); color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+.btn-danger:hover { opacity: 0.9; }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.readiness-item { padding: 4px 8px; margin: 2px 0; border-radius: 4px; font-family: monospace; font-size: 0.85rem; }
+.readiness-item.ok { background: rgba(0,200,81,0.15); color: var(--green); }
+.readiness-item.fail { background: rgba(233,69,96,0.15); color: var(--red); }
+
+.show-log { margin-top: 16px; }
+.log-entry { font-family: monospace; font-size: 0.8rem; padding: 2px 8px; border-left: 3px solid var(--bg3); margin: 2px 0; }
+.log-info { border-left-color: var(--blue); }
+.log-ok { border-left-color: var(--green); }
+.log-warn { border-left-color: #ff9800; }
+.log-danger { border-left-color: var(--red); color: var(--red); }
