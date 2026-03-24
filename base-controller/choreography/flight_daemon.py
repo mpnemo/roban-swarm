@@ -1,17 +1,15 @@
-"""Flight daemon — reads a show file and streams SET_POSITION_TARGET_LOCAL_NED.
+"""Flight daemon — full field operations lifecycle.
 
-This is the "CNC G-code executor" for the swarm: it interpolates between
-waypoints and sends position+velocity targets to each heli at 20 Hz via
-the safety monitor → command sender pipeline.
+State machine:
+    IDLE → LOADED → LINEUP_READY → PREFLIGHT_OK → ARMING → SPOOLING
+    → TAKING_OFF → STAGING → RUNNING ⇄ PAUSED → LANDING → DONE
 
-Lifecycle:
-    load(show)    → LOADED
-    arm()         → ARMED   (pre-flight checks: GPS, mode, battery)
-    go()          → STAGING (sequential takeoff, fly to start positions)
-                  → RUNNING (streaming show targets at 20 Hz)
-    pause()       → PAUSED  (hold position)
-    resume()      → RUNNING
-    stop()        → IDLE    (BRAKE all helis, emergency stop)
+    Any state → RTL (emergency — ArduPilot takes over)
+    Any state → IDLE (via stop() — BRAKE all)
+
+The daemon orchestrates: lineup capture (GPS origin), arm/spool/takeoff,
+staging to show start positions, show playback at 20Hz, controlled landing
+with staggered altitudes, and emergency RTL with altitude separation.
 """
 
 import asyncio
@@ -23,38 +21,65 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Awaitable
 
-from .show_format import ShowFile, HeliTrack, Vec3
+from .show_format import ShowFile, HeliTrack, Vec3, LineupData, HeliPhase
 from .safety_monitor import SafetyMonitor
-from mavlink.command_sender import CommandSender, MODE_BRAKE, MODE_GUIDED
+from mavlink.command_sender import CommandSender, MODE_BRAKE, MODE_GUIDED, MODE_RTL
 
 log = logging.getLogger("roban.flight")
 
 # --- Constants ---
 TICK_HZ = 20
 TICK_INTERVAL = 1.0 / TICK_HZ
-STAGING_ALT_MARGIN = 3.0       # Extra meters above first waypoint for staging
-STAGING_ARRIVAL_TOL = 0.5      # Meters — close enough to start position
-STAGING_TAKEOFF_DELAY = 2.0    # Seconds between sequential takeoffs
-MIN_BATTERY_PCT = 30           # Minimum battery for arm check
-MIN_GPS_FIX = 3                # 3D fix minimum (RTK=5/6 is warning if missing)
 
-# Flat-earth conversion constants
+# Startup
+SPOOL_TIME_S = 8.0              # TradiHeli rotor spool-up after arm
+TAKEOFF_DELAY_S = 3.0           # Between sequential takeoffs
+HOVER_ALT_M = 5.0               # Default takeoff hover altitude
+ARM_TIMEOUT_S = 5.0             # Wait for arm confirmation
+MODE_TIMEOUT_S = 3.0            # Wait for mode change confirmation
+
+# Staging
+STAGING_ARRIVAL_TOL = 1.0       # Meters — close enough to start position
+
+# Landing
+RETURN_BASE_ALT_M = 8.0         # Base altitude for return flight
+RETURN_ALT_STEP_M = 3.0         # Per-heli altitude step during return
+LANDING_DESCENT_RATE = 0.5      # m/s target descent rate
+LANDING_DETECT_ALT_M = 0.3      # Below this = landed
+LANDING_DETECT_TIME_S = 1.5     # Hysteresis
+
+# RTL
+RTL_BASE_ALT_CM = 1500          # 15m base RTL altitude
+RTL_STEP_CM = 300               # +3m per heli
+
+# GPS
+MIN_RTK_FIX = 5                 # RTK Float minimum for lineup
+MIN_GPS_FIX = 3                 # 3D fix minimum for arm
+MIN_BATTERY_PCT = 20            # Minimum battery for arm
+
+# NED
 M_PER_DEG_LAT = 111319.5
 
 
 class DaemonState(str, Enum):
     IDLE = "idle"
     LOADED = "loaded"
-    ARMED = "armed"
+    LINEUP_READY = "lineup_ready"
+    PREFLIGHT_OK = "preflight_ok"
+    ARMING = "arming"
+    SPOOLING = "spooling"
+    TAKING_OFF = "taking_off"
     STAGING = "staging"
     RUNNING = "running"
     PAUSED = "paused"
+    LANDING = "landing"
     DONE = "done"
+    RTL = "rtl"
     ERROR = "error"
 
 
 class FlightDaemon:
-    """Manages show playback for the swarm."""
+    """Manages the complete flight operations lifecycle."""
 
     def __init__(self, tracker=None,
                  command_sender: CommandSender | None = None,
@@ -66,11 +91,15 @@ class FlightDaemon:
         self._on_event = on_event
 
         self._show: ShowFile | None = None
+        self._lineup: LineupData | None = None
         self._state = DaemonState.IDLE
         self._task: asyncio.Task | None = None
         self._start_time: float = 0.0
         self._pause_elapsed: float = 0.0
         self._tick_count: int = 0
+
+        # Per-heli phase tracking for dashboard
+        self._heli_phases: dict[int, HeliPhase] = {}
 
     # --- Properties ---
 
@@ -83,6 +112,10 @@ class FlightDaemon:
         return self._show
 
     @property
+    def lineup(self) -> LineupData | None:
+        return self._lineup
+
+    @property
     def elapsed_s(self) -> float:
         if self._state == DaemonState.RUNNING:
             return time.monotonic() - self._start_time
@@ -90,119 +123,409 @@ class FlightDaemon:
             return self._pause_elapsed
         return 0.0
 
-    # --- Lifecycle ---
+    @property
+    def heli_phases(self) -> dict[int, str]:
+        return {hid: p.value for hid, p in self._heli_phases.items()}
+
+    # ================================================================
+    # LIFECYCLE: Load → Lineup → Preflight → Launch → Go → Land
+    # ================================================================
 
     def load(self, path: str | Path) -> list[str]:
-        """Load and validate a show file from disk."""
+        """Load a show file from disk."""
         data = json.loads(Path(path).read_text())
         show = ShowFile(**data)
         return self.load_show(show)
 
     def load_show(self, show: ShowFile) -> list[str]:
-        """Load and validate an already-parsed show. Returns errors (empty=ok)."""
+        """Load and validate a show. Returns errors (empty=ok)."""
         errors = show.validate_timing()
         if errors:
             self._state = DaemonState.ERROR
             return errors
         self._show = show
+        self._lineup = None  # Reset lineup when new show loaded
         self._state = DaemonState.LOADED
+        self._heli_phases = {t.heli_id: HeliPhase.IDLE for t in show.tracks}
         if self._safety:
             self._safety.clear()
-        log.info("Show '%s' loaded: %d tracks, %.1fs duration",
+        log.info("Show '%s' loaded: %d tracks, %.1fs",
                  show.name, len(show.tracks), show.duration_s)
         asyncio.ensure_future(self._emit_status())
         return []
 
-    async def arm(self) -> list[dict]:
-        """Pre-flight checks. Returns list of per-heli check results.
+    async def capture_lineup(self) -> dict:
+        """Capture GPS positions of all show helis and compute NED origin.
 
-        Each result: {"heli_id": int, "ok": bool, "detail": str}
+        Returns {"ok": bool, "lineup": {...}, "errors": [...]}
         """
-        if self._state not in (DaemonState.LOADED, DaemonState.DONE):
-            return [{"heli_id": 0, "ok": False,
-                     "detail": f"Cannot arm in state {self._state}"}]
         if not self._show:
-            return [{"heli_id": 0, "ok": False, "detail": "No show loaded"}]
+            return {"ok": False, "errors": ["No show loaded"]}
+        if not self._tracker:
+            return {"ok": False, "errors": ["No vehicle tracker"]}
 
-        checks = []
-        all_ok = True
+        errors = []
+        positions = {}  # heli_id → (lat, lon, alt)
 
         for track in self._show.tracks:
             sysid = 10 + track.heli_id
-            heli_label = f"Heli{track.heli_id:02d}"
-
-            if not self._tracker:
-                checks.append({"heli_id": track.heli_id, "ok": False,
-                               "detail": "No vehicle tracker"})
-                all_ok = False
-                continue
-
             v = self._tracker.get(sysid)
             if v is None:
-                checks.append({"heli_id": track.heli_id, "ok": False,
-                               "detail": "Not seen by telemetry"})
+                errors.append(f"Heli{track.heli_id:02d}: not seen")
+                continue
+            if not v["online"]:
+                errors.append(f"Heli{track.heli_id:02d}: offline")
+                continue
+            fix = v.get("gps_fix", 0)
+            if fix < MIN_RTK_FIX:
+                fix_names = {0: "NoFix", 1: "NoFix", 2: "2D", 3: "3D", 4: "DGPS", 5: "Float", 6: "RTK"}
+                errors.append(f"Heli{track.heli_id:02d}: GPS {fix_names.get(fix, fix)} (need RTK Float+)")
+                continue
+            lat, lon = v["lat"], v["lon"]
+            if abs(lat) < 0.001 and abs(lon) < 0.001:
+                errors.append(f"Heli{track.heli_id:02d}: GPS position invalid (0,0)")
+                continue
+            positions[track.heli_id] = (lat, lon, v.get("alt_m", 0))
+
+        if errors:
+            return {"ok": False, "errors": errors}
+
+        # Compute origin as centroid
+        lats = [p[0] for p in positions.values()]
+        lons = [p[1] for p in positions.values()]
+        alts = [p[2] for p in positions.values()]
+        origin_lat = sum(lats) / len(lats)
+        origin_lon = sum(lons) / len(lons)
+        origin_alt = sum(alts) / len(alts)
+
+        # Convert each position to NED relative to origin
+        home_positions = {}
+        for heli_id, (lat, lon, alt) in positions.items():
+            n, e, d = self._gps_to_ned_static(lat, lon, alt, origin_lat, origin_lon, origin_alt)
+            home_positions[heli_id] = Vec3(n=round(n, 3), e=round(e, 3), d=round(d, 3))
+
+        self._lineup = LineupData(
+            origin_lat=origin_lat,
+            origin_lon=origin_lon,
+            origin_alt_m=origin_alt,
+            home_positions=home_positions,
+        )
+
+        # Override show's home with computed origin
+        self._show.home_lat = origin_lat
+        self._show.home_lon = origin_lon
+        self._show.home_alt_m = origin_alt
+
+        self._state = DaemonState.LINEUP_READY
+        log.info("Lineup captured: origin=%.7f,%.7f alt=%.1fm, %d helis",
+                 origin_lat, origin_lon, origin_alt, len(home_positions))
+
+        await self._emit_event({
+            "type": "lineup_captured",
+            "lineup": self._lineup.to_dict(),
+        })
+        await self._emit_status()
+
+        return {"ok": True, "lineup": self._lineup.to_dict(), "errors": []}
+
+    async def preflight(self) -> list[dict]:
+        """Run preflight checks including RTL_ALT verification.
+
+        Returns list of {"heli_id": int, "ok": bool, "detail": str, "fixes": [...]}
+        """
+        if self._state not in (DaemonState.LINEUP_READY, DaemonState.PREFLIGHT_OK):
+            return [{"heli_id": 0, "ok": False, "detail": f"Cannot preflight in state {self._state}"}]
+        if not self._show or not self._lineup:
+            return [{"heli_id": 0, "ok": False, "detail": "Show or lineup not ready"}]
+
+        checks = []
+        all_ok = True
+        heli_ids = sorted(self._show.get_heli_ids())
+
+        for idx, heli_id in enumerate(heli_ids):
+            sysid = 10 + heli_id
+            v = self._tracker.get(sysid) if self._tracker else None
+            issues = []
+            fixes = []
+
+            if v is None:
+                checks.append({"heli_id": heli_id, "ok": False,
+                               "detail": "Not seen", "fixes": []})
                 all_ok = False
                 continue
 
-            issues = []
-
-            # Online check
             if not v["online"]:
                 issues.append("OFFLINE")
 
-            # GPS fix check
+            # GPS check
             fix = v.get("gps_fix", 0)
             if fix < MIN_GPS_FIX:
-                issues.append(f"No GPS fix (fix={fix})")
-            elif fix < 5:
-                # 3D fix but not RTK — warning, not blocker
-                checks.append({"heli_id": track.heli_id, "ok": True,
-                               "detail": f"Ready (GPS 3D, no RTK)"})
+                issues.append(f"GPS fix={fix} (need ≥3)")
+            elif fix < MIN_RTK_FIX:
+                issues.append(f"GPS {fix} (recommend RTK Float+)")
 
-            # Flight mode check
-            mode = v.get("flight_mode", "UNKNOWN")
-            if mode != "GUIDED":
-                issues.append(f"Not in GUIDED mode ({mode})")
-
-            # Battery check
+            # Battery
             batt = v.get("battery_pct")
             if batt is not None and batt < MIN_BATTERY_PCT:
-                issues.append(f"Battery low ({batt}%)")
+                issues.append(f"Battery {batt}% (need ≥{MIN_BATTERY_PCT}%)")
+
+            # Check RTL_ALT — must be staggered
+            expected_rtl_alt = RTL_BASE_ALT_CM + (idx * RTL_STEP_CM)
+            if self._sender:
+                actual_rtl = await asyncio.to_thread(
+                    self._sender.read_param, heli_id, "RTL_ALT"
+                )
+                if actual_rtl is None:
+                    issues.append("RTL_ALT: no response")
+                elif int(actual_rtl) != expected_rtl_alt:
+                    issues.append(f"RTL_ALT={int(actual_rtl)} (expect {expected_rtl_alt})")
+                    fixes.append(("RTL_ALT", expected_rtl_alt))
 
             if issues:
-                checks.append({"heli_id": track.heli_id, "ok": False,
-                               "detail": "; ".join(issues)})
+                checks.append({"heli_id": heli_id, "ok": False,
+                               "detail": "; ".join(issues), "fixes": fixes})
                 all_ok = False
-            elif not any(c["heli_id"] == track.heli_id for c in checks):
-                checks.append({"heli_id": track.heli_id, "ok": True,
-                               "detail": "Ready"})
+            else:
+                checks.append({"heli_id": heli_id, "ok": True,
+                               "detail": "Ready", "fixes": []})
 
         if all_ok:
-            self._state = DaemonState.ARMED
-            log.info("Show armed — all %d helis ready", len(self._show.tracks))
+            self._state = DaemonState.PREFLIGHT_OK
+            log.info("Preflight OK — all %d helis ready", len(heli_ids))
         else:
-            log.warning("Show arm failed — %d issues",
+            log.warning("Preflight issues — %d failures",
                         sum(1 for c in checks if not c["ok"]))
 
-        # Broadcast readiness
-        await self._emit_event({
-            "type": "show_readiness",
-            "checks": checks,
-        })
+        await self._emit_event({"type": "preflight_result", "checks": checks})
         await self._emit_status()
         return checks
 
-    async def go(self):
-        """Start show: staging phase then playback."""
-        if self._state != DaemonState.ARMED:
-            raise RuntimeError(f"Cannot start in state {self._state}")
-        self._state = DaemonState.STAGING
-        self._task = asyncio.create_task(self._staging_then_playback())
-        log.info("Show GO — entering staging phase")
+    async def fix_preflight(self) -> list[dict]:
+        """Auto-fix preflight issues (set RTL_ALT, etc.)."""
+        if not self._show or not self._sender:
+            return [{"heli_id": 0, "ok": False, "detail": "Not ready"}]
+
+        heli_ids = sorted(self._show.get_heli_ids())
+        results = []
+
+        for idx, heli_id in enumerate(heli_ids):
+            expected_rtl_alt = RTL_BASE_ALT_CM + (idx * RTL_STEP_CM)
+            ok = await asyncio.to_thread(
+                self._sender.set_rtl_alt, heli_id, expected_rtl_alt
+            )
+            results.append({
+                "heli_id": heli_id,
+                "param": "RTL_ALT",
+                "value": expected_rtl_alt,
+                "ok": ok,
+            })
+            log.info("Set RTL_ALT=%d on Heli%02d: %s",
+                     expected_rtl_alt, heli_id, "OK" if ok else "FAIL")
+
+        return results
+
+    # ================================================================
+    # LAUNCH: Automated arm → spool → takeoff → stage sequence
+    # ================================================================
+
+    async def launch(self):
+        """Full automated launch: arm → spool → takeoff → stage → hold."""
+        if self._state != DaemonState.PREFLIGHT_OK:
+            raise RuntimeError(f"Cannot launch in state {self._state}")
+        self._task = asyncio.create_task(self._launch_sequence())
         await self._emit_status()
 
+    async def _launch_sequence(self):
+        """Automated launch sequence."""
+        try:
+            heli_ids = sorted(self._show.get_heli_ids())
+
+            # --- Phase 1: ARM ---
+            self._state = DaemonState.ARMING
+            await self._emit_status()
+
+            for heli_id in heli_ids:
+                self._heli_phases[heli_id] = HeliPhase.ARMING
+                await self._emit_phase_progress()
+
+                # Set GUIDED mode
+                self._sender.send_set_mode(heli_id, MODE_GUIDED)
+                if not await self._wait_for_mode(heli_id, "GUIDED", MODE_TIMEOUT_S):
+                    raise RuntimeError(f"Heli{heli_id:02d}: failed to enter GUIDED mode")
+
+                # ARM
+                self._sender.send_arm(heli_id, arm=True)
+                if not await self._wait_for_armed(heli_id, True, ARM_TIMEOUT_S):
+                    # Disarm any already-armed helis
+                    for prev in heli_ids:
+                        if prev == heli_id:
+                            break
+                        self._sender.send_disarm(prev)
+                    raise RuntimeError(f"Heli{heli_id:02d}: failed to arm")
+
+                log.info("Heli%02d armed", heli_id)
+
+            # --- Phase 2: SPOOL ---
+            self._state = DaemonState.SPOOLING
+            for heli_id in heli_ids:
+                self._heli_phases[heli_id] = HeliPhase.SPOOLING
+            await self._emit_phase_progress()
+            log.info("Spooling up (%.0fs)...", SPOOL_TIME_S)
+            await asyncio.sleep(SPOOL_TIME_S)
+
+            # --- Phase 3: TAKEOFF ---
+            self._state = DaemonState.TAKING_OFF
+            await self._emit_status()
+            await self._sequential_takeoff(heli_ids)
+
+            # --- Phase 4: STAGE ---
+            self._state = DaemonState.STAGING
+            await self._emit_status()
+            await self._fly_to_start_positions(heli_ids)
+
+            # Hold at start positions — wait for GO
+            for heli_id in heli_ids:
+                self._heli_phases[heli_id] = HeliPhase.AT_START
+            await self._emit_phase_progress()
+            log.info("All helis at start positions — waiting for GO")
+            await self._emit_status()
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._state = DaemonState.ERROR
+            log.error("Launch failed: %s", e)
+            await self._emit_event({"type": "show_error", "message": str(e)})
+            await self._emit_status()
+
+    async def _sequential_takeoff(self, heli_ids: list[int]):
+        """Sequential takeoff to hover altitude above home positions."""
+        for heli_id in heli_ids:
+            if self._state != DaemonState.TAKING_OFF:
+                return
+            self._heli_phases[heli_id] = HeliPhase.TAKING_OFF
+            await self._emit_phase_progress()
+
+            home = self._lineup.home_positions[heli_id]
+            target_d = -(HOVER_ALT_M)  # NED: negative = up
+
+            log.info("Heli%02d taking off to %.1fm", heli_id, HOVER_ALT_M)
+
+            # Stream position target until at altitude
+            deadline = time.monotonic() + 30  # 30s max for takeoff
+            while self._state == DaemonState.TAKING_OFF:
+                await self._send_safe(heli_id, home.n, home.e, target_d)
+
+                # Check altitude from telemetry
+                v = self._tracker.get(10 + heli_id) if self._tracker else None
+                if v and v.get("relative_alt_m", 0) >= (HOVER_ALT_M - 1.0):
+                    log.info("Heli%02d at hover altitude", heli_id)
+                    break
+
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"Heli{heli_id:02d}: takeoff timeout")
+
+                await asyncio.sleep(TICK_INTERVAL)
+
+            # Delay before next heli
+            if heli_id != heli_ids[-1]:
+                await asyncio.sleep(TAKEOFF_DELAY_S)
+
+    async def _fly_to_start_positions(self, heli_ids: list[int]):
+        """Fly all helis from hover to their show start positions."""
+        targets = {}
+        for heli_id in heli_ids:
+            track = next(t for t in self._show.tracks if t.heli_id == heli_id)
+            wp0 = track.waypoints[0]
+            targets[heli_id] = wp0.pos
+            self._heli_phases[heli_id] = HeliPhase.TRAVERSING
+
+        await self._emit_phase_progress()
+
+        # Fly all simultaneously
+        deadline = time.monotonic() + 60  # 60s max for staging
+        while self._state == DaemonState.STAGING:
+            all_arrived = True
+            for heli_id in heli_ids:
+                t = targets[heli_id]
+                await self._send_safe(heli_id, t.n, t.e, t.d)
+
+                v = self._tracker.get(10 + heli_id) if self._tracker else None
+                if v:
+                    cn, ce, cd = self._gps_to_ned(v["lat"], v["lon"], v.get("alt_m", 0))
+                    dist = math.sqrt((cn - t.n)**2 + (ce - t.e)**2 + (cd - t.d)**2)
+                    if dist > STAGING_ARRIVAL_TOL:
+                        all_arrived = False
+
+            if all_arrived:
+                break
+            if time.monotonic() > deadline:
+                log.warning("Staging timeout — proceeding anyway")
+                break
+
+            await asyncio.sleep(TICK_INTERVAL)
+
+    # ================================================================
+    # SHOW PLAYBACK
+    # ================================================================
+
+    async def go(self):
+        """Start show playback from staging hold."""
+        if self._state != DaemonState.STAGING:
+            raise RuntimeError(f"Cannot start in state {self._state}")
+        self._state = DaemonState.RUNNING
+        self._start_time = time.monotonic()
+        self._tick_count = 0
+        for heli_id in self._heli_phases:
+            self._heli_phases[heli_id] = HeliPhase.RUNNING
+        self._task = asyncio.create_task(self._playback_then_land())
+        log.info("Show STARTED")
+        await self._emit_status()
+
+    async def _playback_then_land(self):
+        """Run show, then auto-transition to landing."""
+        try:
+            await self._playback_loop()
+            if self._state == DaemonState.DONE:
+                # Auto-land after show completes
+                await self.land()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._state = DaemonState.ERROR
+            log.error("Playback error: %s", e, exc_info=True)
+            await self._emit_event({"type": "show_error", "message": str(e)})
+
+    async def _playback_loop(self):
+        """Main playback loop at 20Hz."""
+        next_tick = time.monotonic()
+
+        while self._state == DaemonState.RUNNING:
+            t = self.elapsed_s
+
+            if t >= self._show.duration_s:
+                self._state = DaemonState.DONE
+                log.info("Show COMPLETE (%.1fs)", t)
+                await self._emit_status()
+                break
+
+            for track in self._show.tracks:
+                target = self._interpolate(track, t)
+                if target:
+                    await self._send_target(track.heli_id, target)
+
+            self._tick_count += 1
+            if self._tick_count % TICK_HZ == 0:
+                await self._emit_status()
+
+            next_tick += TICK_INTERVAL
+            sleep_time = next_tick - time.monotonic()
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
+            else:
+                next_tick = time.monotonic()
+
     async def pause(self):
-        """Pause playback — all helis hold current position."""
         if self._state != DaemonState.RUNNING:
             return
         self._pause_elapsed = time.monotonic() - self._start_time
@@ -211,297 +534,256 @@ class FlightDaemon:
         await self._emit_status()
 
     async def resume(self):
-        """Resume from pause."""
         if self._state != DaemonState.PAUSED:
             return
         self._start_time = time.monotonic() - self._pause_elapsed
         self._state = DaemonState.RUNNING
-        log.info("Show RESUMED at %.1fs", self._pause_elapsed)
+        log.info("Show RESUMED")
         await self._emit_status()
 
-    async def stop(self):
-        """Emergency stop — cancel playback, BRAKE all helis."""
-        prev = self._state
-        self._state = DaemonState.IDLE
+    # ================================================================
+    # LANDING
+    # ================================================================
 
-        if self._task:
+    async def land(self):
+        """Controlled return to home + sequential landing."""
+        if self._state not in (DaemonState.RUNNING, DaemonState.PAUSED,
+                                DaemonState.DONE, DaemonState.STAGING):
+            raise RuntimeError(f"Cannot land in state {self._state}")
+
+        # Cancel any running task
+        if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
 
-        # Send BRAKE to all helis in the show
+        self._state = DaemonState.LANDING
+        self._task = asyncio.create_task(self._landing_sequence())
+        await self._emit_status()
+
+    async def _landing_sequence(self):
+        """Return to home with staggered altitudes, then sequential landing."""
+        try:
+            if not self._lineup or not self._show:
+                return
+
+            heli_ids = sorted(self._show.get_heli_ids())
+
+            # Phase 1: Return to home at staggered altitudes
+            log.info("Landing phase 1: return to home positions")
+            for idx, heli_id in enumerate(heli_ids):
+                self._heli_phases[heli_id] = HeliPhase.RETURNING
+            await self._emit_phase_progress()
+
+            return_alts = {}
+            for idx, heli_id in enumerate(heli_ids):
+                return_alts[heli_id] = -(RETURN_BASE_ALT_M + idx * RETURN_ALT_STEP_M)
+
+            # Fly all simultaneously to home positions at staggered altitudes
+            deadline = time.monotonic() + 60
+            while self._state == DaemonState.LANDING:
+                all_home = True
+                for heli_id in heli_ids:
+                    home = self._lineup.home_positions[heli_id]
+                    await self._send_safe(heli_id, home.n, home.e, return_alts[heli_id])
+
+                    v = self._tracker.get(10 + heli_id) if self._tracker else None
+                    if v:
+                        cn, ce, _ = self._gps_to_ned(v["lat"], v["lon"], v.get("alt_m", 0))
+                        horiz = math.sqrt((cn - home.n)**2 + (ce - home.e)**2)
+                        if horiz > 2.0:
+                            all_home = False
+
+                if all_home:
+                    break
+                if time.monotonic() > deadline:
+                    log.warning("Return timeout — proceeding to landing")
+                    break
+                await asyncio.sleep(TICK_INTERVAL)
+
+            # Phase 2: Sequential landing (highest altitude first = last index first)
+            log.info("Landing phase 2: sequential descent")
+            for idx in reversed(range(len(heli_ids))):
+                heli_id = heli_ids[idx]
+                if self._state != DaemonState.LANDING:
+                    break
+
+                self._heli_phases[heli_id] = HeliPhase.DESCENDING
+                await self._emit_phase_progress()
+
+                home = self._lineup.home_positions[heli_id]
+                log.info("Heli%02d descending to ground", heli_id)
+
+                # Gradual descent
+                landed_since = None
+                target_d = return_alts[heli_id]
+                deadline = time.monotonic() + 45
+
+                while self._state == DaemonState.LANDING:
+                    # Slowly lower target altitude
+                    target_d += LANDING_DESCENT_RATE * TICK_INTERVAL
+                    if target_d > 0:
+                        target_d = 0  # Don't command below ground
+
+                    await self._send_safe(heli_id, home.n, home.e, target_d)
+
+                    # Check if landed
+                    v = self._tracker.get(10 + heli_id) if self._tracker else None
+                    if v:
+                        rel_alt = v.get("relative_alt_m", 10)
+                        if rel_alt < LANDING_DETECT_ALT_M:
+                            if landed_since is None:
+                                landed_since = time.monotonic()
+                            elif time.monotonic() - landed_since >= LANDING_DETECT_TIME_S:
+                                # Landed — disarm
+                                self._sender.send_disarm(heli_id)
+                                self._heli_phases[heli_id] = HeliPhase.LANDED
+                                log.info("Heli%02d LANDED and disarmed", heli_id)
+                                await self._emit_phase_progress()
+                                break
+                        else:
+                            landed_since = None
+
+                    if time.monotonic() > deadline:
+                        log.warning("Heli%02d landing timeout — disarming", heli_id)
+                        self._sender.send_disarm(heli_id)
+                        self._heli_phases[heli_id] = HeliPhase.LANDED
+                        break
+
+                    await asyncio.sleep(TICK_INTERVAL)
+
+                # Continue holding other helis at their return altitude
+                for other_id in heli_ids:
+                    if other_id != heli_id and self._heli_phases.get(other_id) != HeliPhase.LANDED:
+                        other_home = self._lineup.home_positions[other_id]
+                        await self._send_safe(other_id, other_home.n, other_home.e,
+                                              return_alts[other_id])
+
+            self._state = DaemonState.DONE
+            log.info("All helis landed — show complete")
+            await self._emit_status()
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._state = DaemonState.ERROR
+            log.error("Landing error: %s", e, exc_info=True)
+            await self._emit_event({"type": "show_error", "message": str(e)})
+
+    # ================================================================
+    # EMERGENCY
+    # ================================================================
+
+    async def rtl_all(self):
+        """Emergency RTL — set staggered RTL_ALT, switch all to RTL mode."""
+        if not self._show or not self._sender:
+            return
+
+        # Cancel any running task
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+        heli_ids = sorted(self._show.get_heli_ids())
+
+        for idx, heli_id in enumerate(heli_ids):
+            alt_cm = RTL_BASE_ALT_CM + (idx * RTL_STEP_CM)
+            # Set staggered RTL altitude (blocking — run in thread)
+            await asyncio.to_thread(self._sender.set_rtl_alt, heli_id, alt_cm)
+            # Switch to RTL
+            self._sender.send_rtl(heli_id)
+            self._heli_phases[heli_id] = HeliPhase.RTL
+            log.warning("Heli%02d → RTL at %dm", heli_id, alt_cm // 100)
+
+        self._state = DaemonState.RTL
+        log.warning("RTL ALL — ArduPilot in control")
+        await self._emit_event({"type": "rtl_triggered", "heli_ids": heli_ids})
+        await self._emit_status()
+
+    async def stop(self):
+        """Emergency stop — BRAKE all helis."""
+        prev = self._state
+        self._state = DaemonState.IDLE
+
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
         if self._show and self._sender:
             for track in self._show.tracks:
                 try:
                     self._sender.send_set_mode(track.heli_id, MODE_BRAKE)
                 except Exception as e:
-                    log.error("Failed to BRAKE Heli%02d: %s",
-                              track.heli_id, e)
+                    log.error("Failed to BRAKE Heli%02d: %s", track.heli_id, e)
 
         if self._safety:
             self._safety.clear()
 
-        log.warning("Show STOPPED from state %s", prev)
+        self._heli_phases = {hid: HeliPhase.IDLE for hid in self._heli_phases}
+        log.warning("STOP from state %s — all helis BRAKE", prev)
         await self._emit_status()
 
-    # --- Staging ---
+    # ================================================================
+    # HELPERS
+    # ================================================================
 
-    async def _staging_then_playback(self):
-        """Sequential takeoff → fly to start positions → run show."""
-        try:
-            await self._run_staging()
-            if self._state != DaemonState.STAGING:
-                return  # Cancelled or error
-            self._state = DaemonState.RUNNING
-            self._start_time = time.monotonic()
-            self._tick_count = 0
-            log.info("Staging complete — show RUNNING")
-            await self._emit_status()
-            await self._playback_loop()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self._state = DaemonState.ERROR
-            log.error("Flight daemon error: %s", e, exc_info=True)
-            await self._emit_event({
-                "type": "show_error",
-                "message": str(e),
-            })
+    async def _wait_for_armed(self, heli_id: int, armed: bool, timeout: float) -> bool:
+        """Wait for arm/disarm confirmation from telemetry."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            v = self._tracker.get(10 + heli_id) if self._tracker else None
+            if v and v.get("armed") == armed:
+                return True
+            await asyncio.sleep(0.2)
+        return False
 
-    async def _run_staging(self):
-        """Fly each heli from its current GPS position to its first waypoint.
-
-        Sequential takeoff: one heli at a time, takeoff to staging altitude,
-        then horizontal traverse to start position.
-        """
-        if not self._show or not self._tracker:
-            return
-
-        staging_targets: dict[int, dict] = {}  # heli_id → {start_ned, current_phase}
-
-        for track in self._show.tracks:
-            sysid = 10 + track.heli_id
-            v = self._tracker.get(sysid)
-            if not v:
-                continue
-
-            # Convert heli's current GPS to NED relative to show home
-            current_n, current_e, current_d = self._gps_to_ned(
-                v["lat"], v["lon"], v.get("alt_m", self._show.home_alt_m),
-            )
-
-            # Target: first waypoint position
-            wp0 = track.waypoints[0]
-            staging_alt_d = wp0.pos.d - STAGING_ALT_MARGIN  # Higher (more negative D)
-
-            staging_targets[track.heli_id] = {
-                "start_n": current_n, "start_e": current_e, "start_d": current_d,
-                "target_n": wp0.pos.n, "target_e": wp0.pos.e, "target_d": wp0.pos.d,
-                "staging_alt_d": staging_alt_d,
-                "phase": "takeoff",  # takeoff → traverse → descend → done
-                "arrived": False,
-            }
-
-        if not staging_targets:
-            return
-
-        # Sequential takeoff: process helis one at a time
-        heli_order = sorted(staging_targets.keys())
-        active_helis: set[int] = set()
-        next_takeoff_idx = 0
-        last_takeoff_time = 0.0
-
-        while self._state == DaemonState.STAGING:
-            now = time.monotonic()
-
-            # Start next heli if enough time has passed
-            if (next_takeoff_idx < len(heli_order) and
-                    now - last_takeoff_time >= STAGING_TAKEOFF_DELAY):
-                heli_id = heli_order[next_takeoff_idx]
-                active_helis.add(heli_id)
-                log.info("Staging: Heli%02d starting takeoff", heli_id)
-                next_takeoff_idx += 1
-                last_takeoff_time = now
-
-            # Update each active heli
-            all_arrived = True
-            for heli_id in active_helis:
-                st = staging_targets[heli_id]
-                if st["arrived"]:
-                    # Hold at target
-                    await self._send_safe(
-                        heli_id, st["target_n"], st["target_e"], st["target_d"],
-                    )
-                    continue
-
-                all_arrived = False
-
-                if st["phase"] == "takeoff":
-                    # Climb to staging altitude above current position
-                    await self._send_safe(
-                        heli_id, st["start_n"], st["start_e"], st["staging_alt_d"],
-                    )
-                    # Check if at altitude
-                    sysid = 10 + heli_id
-                    v = self._tracker.get(sysid)
-                    if v:
-                        cn, ce, cd = self._gps_to_ned(
-                            v["lat"], v["lon"], v.get("alt_m", 0))
-                        if abs(cd - st["staging_alt_d"]) < STAGING_ARRIVAL_TOL:
-                            st["phase"] = "traverse"
-                            log.info("Staging: Heli%02d at altitude, traversing",
-                                     heli_id)
-
-                elif st["phase"] == "traverse":
-                    # Fly horizontally to target position at staging altitude
-                    await self._send_safe(
-                        heli_id, st["target_n"], st["target_e"],
-                        st["staging_alt_d"],
-                    )
-                    sysid = 10 + heli_id
-                    v = self._tracker.get(sysid)
-                    if v:
-                        cn, ce, cd = self._gps_to_ned(
-                            v["lat"], v["lon"], v.get("alt_m", 0))
-                        horiz = math.sqrt(
-                            (cn - st["target_n"]) ** 2 +
-                            (ce - st["target_e"]) ** 2
-                        )
-                        if horiz < STAGING_ARRIVAL_TOL:
-                            st["phase"] = "descend"
-                            log.info("Staging: Heli%02d at position, descending",
-                                     heli_id)
-
-                elif st["phase"] == "descend":
-                    # Descend to actual first waypoint altitude
-                    await self._send_safe(
-                        heli_id, st["target_n"], st["target_e"], st["target_d"],
-                    )
-                    sysid = 10 + heli_id
-                    v = self._tracker.get(sysid)
-                    if v:
-                        cn, ce, cd = self._gps_to_ned(
-                            v["lat"], v["lon"], v.get("alt_m", 0))
-                        dist = math.sqrt(
-                            (cn - st["target_n"]) ** 2 +
-                            (ce - st["target_e"]) ** 2 +
-                            (cd - st["target_d"]) ** 2
-                        )
-                        if dist < STAGING_ARRIVAL_TOL:
-                            st["arrived"] = True
-                            log.info("Staging: Heli%02d arrived at start position",
-                                     heli_id)
-
-            # Check if all helis have arrived
-            if (next_takeoff_idx >= len(heli_order) and all_arrived and
-                    all(staging_targets[h]["arrived"] for h in heli_order)):
-                log.info("Staging complete — all helis in position")
-                break
-
-            # Status update every 1s
-            if int(now * TICK_HZ) % TICK_HZ == 0:
-                await self._emit_status()
-
-            await asyncio.sleep(TICK_INTERVAL)
-
-    # --- Playback ---
-
-    async def _playback_loop(self):
-        """Main playback loop — interpolate and stream targets at 20 Hz."""
-        try:
-            next_tick = time.monotonic()
-
-            while self._state == DaemonState.RUNNING:
-                t = self.elapsed_s
-
-                if t >= self._show.duration_s:
-                    self._state = DaemonState.DONE
-                    log.info("Show COMPLETE (%.1fs)", t)
-                    await self._emit_status()
-                    break
-
-                # Interpolate and send targets for all tracks
-                for track in self._show.tracks:
-                    target = self._interpolate(track, t)
-                    if target:
-                        await self._send_target(track.heli_id, target)
-
-                # Periodic status (every 1s)
-                self._tick_count += 1
-                if self._tick_count % TICK_HZ == 0:
-                    await self._emit_status()
-
-                    # Check for offline helis during show
-                    for track in self._show.tracks:
-                        sysid = 10 + track.heli_id
-                        v = self._tracker.get(sysid) if self._tracker else None
-                        if v and not v["online"]:
-                            await self._emit_event({
-                                "type": "show_error",
-                                "message": f"Heli{track.heli_id:02d} went OFFLINE during show",
-                            })
-
-                # Fixed-rate timing (no drift)
-                next_tick += TICK_INTERVAL
-                sleep_time = next_tick - time.monotonic()
-                if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
-                else:
-                    next_tick = time.monotonic()  # Reset if we fell behind
-
-        except asyncio.CancelledError:
-            pass
+    async def _wait_for_mode(self, heli_id: int, mode_name: str, timeout: float) -> bool:
+        """Wait for flight mode confirmation from telemetry."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            v = self._tracker.get(10 + heli_id) if self._tracker else None
+            if v and v.get("flight_mode") == mode_name:
+                return True
+            await asyncio.sleep(0.2)
+        return False
 
     async def _send_target(self, heli_id: int, target: dict):
-        """Send interpolated target through the safety monitor."""
-        pos = target["pos"]
-        vel = target["vel"]
-
+        """Send interpolated target through safety monitor."""
+        pos, vel = target["pos"], target["vel"]
         if self._safety:
-            sent = await self._safety.check_and_send(
-                heli_id,
-                pos.n, pos.e, pos.d,
-                vel.n, vel.e, vel.d,
-            )
-            if not sent:
-                log.debug("Heli%02d target blocked by safety", heli_id)
+            await self._safety.check_and_send(
+                heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d)
         elif self._sender:
-            # No safety monitor — send directly (testing only)
             self._sender.send_position_target(
-                heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d,
-            )
+                heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d)
 
     async def _send_safe(self, heli_id: int,
                           n: float, e: float, d: float,
                           vn: float = 0, ve: float = 0, vd: float = 0):
-        """Send a position target through safety monitor (staging helper)."""
+        """Send position target through safety monitor."""
         if self._safety:
             await self._safety.check_and_send(heli_id, n, e, d, vn, ve, vd)
         elif self._sender:
             self._sender.send_position_target(heli_id, n, e, d, vn, ve, vd)
 
-    # --- Interpolation ---
-
     def _interpolate(self, track: HeliTrack, t: float) -> dict | None:
-        """Linear interpolation between surrounding waypoints.
-
-        TODO: Replace with jerk-limited trajectory (Ruckig) or CatmullRom spline.
-        """
+        """Linear interpolation between waypoints."""
         wps = track.waypoints
-
-        # Before first waypoint — hold at first position
         if t <= wps[0].t:
             return {"pos": wps[0].pos, "vel": Vec3(n=0, e=0, d=0)}
 
         for i in range(len(wps) - 1):
             if wps[i].t <= t <= wps[i + 1].t:
-                # Handle hold time
                 if wps[i].hold_s > 0 and t <= wps[i].t + wps[i].hold_s:
                     return {"pos": wps[i].pos, "vel": Vec3(n=0, e=0, d=0)}
-
-                # Linear interpolation
                 dt = wps[i + 1].t - wps[i].t
                 if dt <= 0:
                     return {"pos": wps[i + 1].pos, "vel": Vec3(n=0, e=0, d=0)}
@@ -519,40 +801,45 @@ class FlightDaemon:
                 )
                 return {"pos": pos, "vel": vel}
 
-        # Past last waypoint — hold final position
         return {"pos": wps[-1].pos, "vel": Vec3(n=0, e=0, d=0)}
-
-    # --- GPS / NED conversion ---
 
     def _gps_to_ned(self, lat: float, lon: float, alt_m: float
                      ) -> tuple[float, float, float]:
-        """Convert GPS coordinates to NED meters relative to show home.
-
-        Uses flat-earth approximation (adequate for <500m radius).
-        """
+        """Convert GPS to NED relative to show home (lineup origin)."""
         if not self._show:
             return 0, 0, 0
-        d_lat = lat - self._show.home_lat
-        d_lon = lon - self._show.home_lon
-        n = d_lat * M_PER_DEG_LAT
-        e = d_lon * M_PER_DEG_LAT * math.cos(math.radians(self._show.home_lat))
-        d = -(alt_m - self._show.home_alt_m)  # NED: down is positive
+        return self._gps_to_ned_static(
+            lat, lon, alt_m,
+            self._show.home_lat, self._show.home_lon, self._show.home_alt_m,
+        )
+
+    @staticmethod
+    def _gps_to_ned_static(lat, lon, alt, ref_lat, ref_lon, ref_alt):
+        n = (lat - ref_lat) * M_PER_DEG_LAT
+        e = (lon - ref_lon) * M_PER_DEG_LAT * math.cos(math.radians(ref_lat))
+        d = -(alt - ref_alt)
         return n, e, d
 
     # --- Events ---
 
     async def _emit_status(self):
-        """Broadcast current show status to WebSocket clients."""
         await self._emit_event({
             "type": "show_status",
             "state": self._state.value,
             "elapsed_s": round(self.elapsed_s, 1),
             "duration_s": self._show.duration_s if self._show else 0,
             "show_name": self._show.name if self._show else None,
+            "heli_phases": self.heli_phases,
+        })
+
+    async def _emit_phase_progress(self):
+        await self._emit_event({
+            "type": "phase_progress",
+            "state": self._state.value,
+            "heli_phases": self.heli_phases,
         })
 
     async def _emit_event(self, event: dict):
-        """Send an event to WebSocket broadcast."""
         if self._on_event:
             try:
                 await self._on_event(event)

@@ -8,8 +8,55 @@ See docs/show_file_spec.md for the full specification.
 """
 
 from __future__ import annotations
+import time
+from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Optional
+
+
+class HeliPhase(str, Enum):
+    """Per-heli operational phase during flight operations."""
+    IDLE = "idle"
+    ARMING = "arming"
+    SPOOLING = "spooling"
+    TAKING_OFF = "taking_off"
+    TRAVERSING = "traversing"     # Flying to show start position
+    AT_START = "at_start"         # Holding at start position, ready for GO
+    RUNNING = "running"           # Show playback active
+    RETURNING = "returning"       # Flying back to home position
+    DESCENDING = "descending"     # Landing descent
+    LANDED = "landed"             # On ground, disarmed
+    RTL = "rtl"                   # ArduPilot RTL active
+    ERROR = "error"
+
+
+class LineupData(BaseModel):
+    """Captured lineup positions and computed NED origin.
+
+    Created by capture_lineup() — stores the real-world reference frame
+    for the show. The origin becomes the NED (0,0,0) point, and each
+    heli's GPS position at lineup time becomes its home/RTL position.
+    """
+    origin_lat: float = Field(description="Computed origin latitude (centroid)")
+    origin_lon: float = Field(description="Computed origin longitude (centroid)")
+    origin_alt_m: float = Field(description="Computed origin altitude AMSL (m)")
+    timestamp: float = Field(default_factory=time.time, description="Capture time (epoch)")
+    home_positions: dict[int, Vec3] = Field(
+        description="Per-heli home position in NED meters relative to origin. "
+                    "Key = heli_id. These are the takeoff/landing/RTL positions.",
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "origin_lat": self.origin_lat,
+            "origin_lon": self.origin_lon,
+            "origin_alt_m": self.origin_alt_m,
+            "timestamp": self.timestamp,
+            "home_positions": {
+                hid: {"n": p.n, "e": p.e, "d": p.d}
+                for hid, p in self.home_positions.items()
+            },
+        }
 
 
 class Vec3(BaseModel):

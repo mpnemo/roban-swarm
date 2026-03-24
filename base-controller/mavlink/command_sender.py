@@ -103,6 +103,18 @@ class CommandSender:
         )
         log.info("Sent %s to Heli%02d", "ARM" if arm else "DISARM", heli_id)
 
+    def send_disarm(self, heli_id: int):
+        """Convenience: disarm a heli."""
+        self.send_arm(heli_id, arm=False)
+
+    def send_rtl(self, heli_id: int):
+        """Switch heli to RTL mode."""
+        self.send_set_mode(heli_id, MODE_RTL)
+
+    def set_rtl_alt(self, heli_id: int, alt_cm: int) -> bool:
+        """Set RTL_ALT (cm) for staggered failsafe altitudes. Blocking."""
+        return self.set_param(heli_id, "RTL_ALT", float(alt_cm))
+
     def set_hub_client(self, hub_client):
         """Register the HubClient so we can use its TCP connection for param ops."""
         self._hub_client = hub_client
