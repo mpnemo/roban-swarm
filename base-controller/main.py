@@ -11,6 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from api.fleet import router as fleet_router
 from api.mode import router as mode_router
 from api.show import router as show_router
+from api.base import router as base_router
+from api.params import router as params_router
 from api._state import set_daemon, set_tracker
 from mavlink.vehicle_tracker import VehicleTracker
 from mavlink.command_sender import CommandSender
@@ -62,6 +64,7 @@ async def lifespan(app: FastAPI):
 
     # MAVLink commands (write path)
     _sender = CommandSender()
+    _sender.set_hub_client(_tracker._hub)  # Share TCP connection for param read/write
 
     # Safety monitor (collision avoidance + geofence)
     _safety = SafetyMonitor(
@@ -102,6 +105,8 @@ app = FastAPI(
 app.include_router(fleet_router, prefix="/api")
 app.include_router(mode_router, prefix="/api")
 app.include_router(show_router, prefix="/api")
+app.include_router(base_router, prefix="/api")
+app.include_router(params_router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -12,6 +12,7 @@ log = logging.getLogger("roban.mavlink")
 _WANTED = {
     "HEARTBEAT", "GPS_RAW_INT", "SYS_STATUS", "ATTITUDE",
     "GLOBAL_POSITION_INT", "VFR_HUD", "BATTERY_STATUS",
+    "AUTOPILOT_VERSION",
 }
 
 
@@ -30,6 +31,8 @@ class HubClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._running = False
+        # Param read/write support: CommandSender writes keys, read thread fills values
+        self.pending_params: dict[tuple[int, str], float | None] = {}
 
     async def start(self):
         self._running = True
@@ -69,6 +72,9 @@ class HubClient:
         )
         log.info("Connected to mavlink-hub at %s", self._hub_addr)
 
+        # Request AUTOPILOT_VERSION from all known vehicles
+        self._version_requested: set[int] = set()
+
         null_count = 0
         while self._running:
             try:
@@ -87,6 +93,33 @@ class HubClient:
 
             null_count = 0
             msg_type = msg.get_type()
+
+            # Request firmware version from new vehicles
+            if msg_type == "HEARTBEAT":
+                src = msg.get_srcSystem()
+                if src < 250 and src not in self._version_requested:
+                    self._version_requested.add(src)
+                    try:
+                        self._conn.mav.command_long_send(
+                            src, 1,  # target system, component
+                            mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
+                            0,   # confirmation
+                            148, # param1: AUTOPILOT_VERSION msg id
+                            0, 0, 0, 0, 0, 0,
+                        )
+                        log.info("Requested AUTOPILOT_VERSION from sysid %d", src)
+                    except Exception:
+                        pass
+
+            # Handle PARAM_VALUE for pending param requests
+            if msg_type == "PARAM_VALUE":
+                src = msg.get_srcSystem()
+                pname = msg.param_id.rstrip("\x00") if isinstance(msg.param_id, str) \
+                    else msg.param_id.decode("ascii").rstrip("\x00")
+                key = (src, pname)
+                if key in self.pending_params:
+                    self.pending_params[key] = msg.param_value
+
             if msg_type == "BAD_DATA" or msg_type not in _WANTED:
                 continue
 
@@ -160,4 +193,15 @@ class HubClient:
                 "battery_mv": msg.voltages[0] if msg.voltages[0] != 65535 else None,
                 "current_ma": msg.current_battery if msg.current_battery >= 0 else None,
             }
+        if msg_type == "AUTOPILOT_VERSION":
+            sw = msg.flight_sw_version
+            major = (sw >> 24) & 0xFF
+            minor = (sw >> 16) & 0xFF
+            patch = (sw >> 8) & 0xFF
+            fw_type = sw & 0xFF  # 0=dev,64=alpha,128=beta,192=rc,255=official
+            type_str = {0: "dev", 64: "alpha", 128: "beta", 192: "rc", 255: ""}.get(fw_type, "")
+            ver = f"{major}.{minor}.{patch}"
+            if type_str:
+                ver += f"-{type_str}"
+            return {"fw_version": ver}
         return None

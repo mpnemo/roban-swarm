@@ -22,6 +22,17 @@
     <main>
         <!-- Dashboard page -->
         <section id="page-dashboard" class="page active">
+            <div id="base-status" class="base-status-card">
+                <div class="base-header">
+                    <span class="base-title">Base Station</span>
+                    <span id="base-ntrip-badge" class="badge badge-offline">NTRIP</span>
+                </div>
+                <div class="base-stats">
+                    <span class="label">RTCM</span><span class="value" id="base-rtcm-bps">-</span>
+                    <span class="label">Clients</span><span class="value" id="base-ntrip-clients">-</span>
+                    <span class="label">Total</span><span class="value" id="base-rtcm-total">-</span>
+                </div>
+            </div>
             <h2>Fleet Overview</h2>
             <div id="fleet-grid" class="fleet-grid">
                 <p class="placeholder">No vehicles registered. Go to Fleet to add helis.</p>
@@ -101,6 +112,23 @@
             <div id="config-telemetry" class="telemetry-panel">
                 <p class="placeholder">Select a heli and click Connect to GCS.</p>
             </div>
+
+            <h2>Fleet Parameter Map</h2>
+            <table id="param-map-table" class="param-table">
+                <thead>
+                    <tr>
+                        <th>Heli</th><th>IP</th><th>Expected SysID</th>
+                        <th>GPS1_TYPE</th><th>GPS_AUTO_CONFIG</th>
+                        <th>SERIAL2_BAUD</th><th>SERIAL2_PROTOCOL</th>
+                        <th>SYSID_THISMAV</th><th>Status</th><th></th>
+                    </tr>
+                </thead>
+                <tbody id="param-map-tbody"></tbody>
+            </table>
+            <button id="btn-check-all-params" class="btn-secondary">Check All Params</button>
+
+            <h3 id="param-detail-title" style="display:none">Parameter Details</h3>
+            <div id="param-detail" style="display:none"></div>
         </section>
     </main>
 

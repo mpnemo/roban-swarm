@@ -103,12 +103,112 @@ class CommandSender:
         )
         log.info("Sent %s to Heli%02d", "ARM" if arm else "DISARM", heli_id)
 
+    def set_hub_client(self, hub_client):
+        """Register the HubClient so we can use its TCP connection for param ops."""
+        self._hub_client = hub_client
+
+    def read_param(self, heli_id: int, param_name: str,
+                   timeout: float = 3.0) -> float | None:
+        """Read a single parameter from a heli's FC. Blocking — use in executor.
+
+        Uses the HubClient's TCP connection (which is already reading all
+        MAVLink traffic) to send the request. PARAM_VALUE responses are
+        captured via the hub_client's pending_params dict.
+        """
+        if not hasattr(self, "_hub_client") or not self._hub_client:
+            log.warning("No hub_client — cannot read params")
+            return None
+
+        hub = self._hub_client
+        target_system = 10 + heli_id
+
+        # Register that we're waiting for this param
+        key = (target_system, param_name)
+        hub.pending_params[key] = None
+
+        # Send request via the hub_client's connection
+        param_id = param_name.encode("ascii").ljust(16, b"\x00")
+        try:
+            hub._conn.mav.param_request_read_send(
+                target_system, 1, param_id, -1,
+            )
+        except Exception as e:
+            log.warning("Failed to send param request: %s", e)
+            hub.pending_params.pop(key, None)
+            return None
+
+        # Wait for response (hub_client's read thread will fill it in)
+        import time
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            val = hub.pending_params.get(key)
+            if val is not None:
+                hub.pending_params.pop(key, None)
+                return val
+            time.sleep(0.1)
+
+        hub.pending_params.pop(key, None)
+        return None
+
+    def set_param(self, heli_id: int, param_name: str, value: float,
+                  param_type: int = 9) -> bool:
+        """Set a parameter on a heli's FC. Returns True if ACK received."""
+        if not hasattr(self, "_hub_client") or not self._hub_client:
+            log.warning("No hub_client — cannot set params")
+            return False
+
+        hub = self._hub_client
+        target_system = 10 + heli_id
+
+        key = (target_system, param_name)
+        hub.pending_params[key] = None
+
+        param_id = param_name.encode("ascii").ljust(16, b"\x00")
+        try:
+            hub._conn.mav.param_set_send(
+                target_system, 1, param_id, value, param_type,
+            )
+        except Exception as e:
+            log.warning("Failed to send param set: %s", e)
+            hub.pending_params.pop(key, None)
+            return False
+
+        import time
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            val = hub.pending_params.get(key)
+            if val is not None:
+                hub.pending_params.pop(key, None)
+                log.info("Param %s set to %.0f on Heli%02d (confirmed: %.0f)",
+                         param_name, value, heli_id, val)
+                return True
+            time.sleep(0.1)
+
+        hub.pending_params.pop(key, None)
+        log.warning("Param %s set to %.0f on Heli%02d — NO ACK",
+                    param_name, value, heli_id)
+        return False
+
+    def read_params_batch(self, heli_id: int,
+                          param_names: list[str]) -> dict[str, float | None]:
+        """Read multiple params. Returns {name: value} dict."""
+        result = {}
+        for name in param_names:
+            result[name] = self.read_param(heli_id, name)
+        return result
+
     def close_all(self):
-        """Close all UDP connections."""
+        """Close all connections."""
         for heli_id, conn in self._connections.items():
             try:
                 conn.close()
             except Exception:
                 pass
         self._connections.clear()
+        if hasattr(self, "_tcp_conn") and self._tcp_conn:
+            try:
+                self._tcp_conn.close()
+            except Exception:
+                pass
+            self._tcp_conn = None
         log.info("All command connections closed")

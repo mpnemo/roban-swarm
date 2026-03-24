@@ -249,3 +249,37 @@ footer {
 .log-ok { border-left-color: var(--green); }
 .log-warn { border-left-color: #ff9800; }
 .log-danger { border-left-color: var(--red); color: var(--red); }
+
+/* Base station status card */
+.base-status-card {
+    background: var(--bg2);
+    border: 1px solid var(--bg3);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+}
+.base-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.base-title { font-weight: bold; font-size: 1.1rem; }
+.badge-online { background: var(--green); color: #000; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+.badge-offline { background: var(--red); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+.base-stats {
+    display: grid;
+    grid-template-columns: 60px 1fr 60px 1fr 60px 1fr;
+    gap: 4px 8px;
+    font-size: 0.85rem;
+}
+
+/* Param table */
+.param-table, .param-detail-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 0.85rem; }
+.param-table th, .param-detail-table th { text-align: left; padding: 6px 8px; border-bottom: 2px solid var(--bg3); color: var(--fg2); }
+.param-table td, .param-detail-table td { padding: 4px 8px; border-bottom: 1px solid var(--bg3); }
+.param-ok { color: var(--green); }
+.param-bad { color: var(--red); font-weight: bold; }
+.badge-warn { background: var(--yellow); color: #000; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
+.btn-fix { background: var(--yellow); color: #000; border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.75rem; }
+.dim { color: var(--fg2); }

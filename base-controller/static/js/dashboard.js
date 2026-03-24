@@ -16,13 +16,18 @@ const Dashboard = (() => {
         }
     }
 
+    let paramStatus = {};  // heli_id -> {needs_check, sysid_ok}
+
     function renderCard(heli) {
         const v = vehicles[heli.sysid] || {};
         const online = v.online || false;
+        const ps = paramStatus[heli.id];
+        const paramWarn = ps && (ps.needs_check || !ps.sysid_ok);
         return `
         <div class="heli-card ${online ? 'online' : 'offline'}" id="card-${heli.id}">
             <div class="heli-header">
                 <span class="heli-name">${heli.name}</span>
+                ${paramWarn ? '<span class="badge badge-warn" onclick="Dashboard.checkParams(' + heli.id + ')" title="FC params may be incorrect">⚠ Params</span>' : ''}
                 <span class="heli-status ${online ? 'online' : 'offline'}"></span>
             </div>
             <div class="heli-stats">
@@ -34,12 +39,38 @@ const Dashboard = (() => {
                 <span class="label">Mode</span><span class="value">${v.flight_mode || '-'}</span>
                 <span class="label">Armed</span><span class="value">${v.armed ? 'YES' : 'No'}</span>
                 <span class="label">SysID</span><span class="value">${heli.sysid}</span>
+                <span class="label">FW</span><span class="value">${v.fw_version || '-'}</span>
             </div>
             <div class="heli-actions">
                 <button onclick="Dashboard.configHeli(${heli.id})">Config</button>
+                <button onclick="Dashboard.checkParams(${heli.id})">Check Params</button>
             </div>
         </div>`;
     }
+
+    async function checkParams(heliId) {
+        // Switch to config page and trigger param check
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.querySelector('[data-page="config"]').classList.add('active');
+        document.getElementById('page-config').classList.add('active');
+        if (typeof Config !== 'undefined' && Config.loadParams) {
+            Config.loadParams(heliId);
+        }
+    }
+
+    async function refreshParamStatus() {
+        try {
+            const r = await fetch('/api/fleet/params/summary');
+            const data = await r.json();
+            paramStatus = {};
+            data.forEach(h => { paramStatus[h.heli_id] = h; });
+            renderAll();
+        } catch (e) { /* ignore */ }
+    }
+    // Check param status every 30s
+    setTimeout(refreshParamStatus, 3000);
+    setInterval(refreshParamStatus, 30000);
 
     function renderAll() {
         if (helis.length === 0) {
@@ -85,10 +116,33 @@ const Dashboard = (() => {
         }
     });
 
+    // --- Base station status ---
+    async function refreshBase() {
+        try {
+            const r = await fetch('/api/base/status');
+            const d = await r.json();
+            const badge = document.getElementById('base-ntrip-badge');
+            if (d.ntrip_active) {
+                badge.textContent = 'NTRIP OK';
+                badge.className = 'badge badge-online';
+            } else {
+                badge.textContent = 'NTRIP OFF';
+                badge.className = 'badge badge-offline';
+            }
+            const bps = d.rtcm_bps || 0;
+            document.getElementById('base-rtcm-bps').textContent = bps > 0 ? (bps / 1000).toFixed(1) + ' kbps' : '-';
+            document.getElementById('base-ntrip-clients').textContent = d.ntrip_clients || '0';
+            const total = d.rtcm_bytes_total || 0;
+            document.getElementById('base-rtcm-total').textContent = total > 0 ? (total / 1048576).toFixed(1) + ' MB' : '-';
+        } catch (e) { /* ignore */ }
+    }
+    refreshBase();
+    setInterval(refreshBase, 5000);
+
     // Initial load
     refresh();
 
-    return { refresh, configHeli };
+    return { refresh, configHeli, checkParams };
 })();
 
 async function updateModeBadge() {
