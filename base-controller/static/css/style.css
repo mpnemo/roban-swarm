@@ -283,3 +283,4 @@ footer {
 .badge-warn { background: var(--yellow); color: #000; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
 .btn-fix { background: var(--yellow); color: #000; border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.75rem; }
 .dim { color: var(--fg2); }
+.btn-small { background: var(--bg3); color: var(--fg); border: 1px solid var(--fg2); border-radius: 4px; padding: 2px 10px; cursor: pointer; font-size: 0.8rem; vertical-align: middle; }

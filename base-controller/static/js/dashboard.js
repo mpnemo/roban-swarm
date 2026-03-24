@@ -142,7 +142,13 @@ const Dashboard = (() => {
     // Initial load
     refresh();
 
-    return { refresh, configHeli, checkParams };
+    async function refreshAll() {
+        await refresh();
+        refreshBase();
+        refreshParamStatus();
+    }
+
+    return { refresh, configHeli, checkParams, refreshAll };
 })();
 
 async function updateModeBadge() {
