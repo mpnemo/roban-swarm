@@ -53,17 +53,32 @@ async def set_production_mode():
     return {"mode": _current_mode, "selected_heli": _selected_heli, "sim_mode": is_sim_mode()}
 
 
+SIM_LOG = "/tmp/mavlink-sim.log"
+
+
+def _start_sim():
+    """Start the simulator process, handling log permissions."""
+    import os
+    # Ensure log file is writable by us
+    try:
+        with open(SIM_LOG, "a"):
+            pass
+        os.chmod(SIM_LOG, 0o666)
+    except Exception:
+        pass
+    subprocess.Popen(
+        ["/opt/roban-swarm/venv/bin/python3", "-u", "/opt/roban-swarm/mavlink-sim.py", "--helis", "2"],
+        stdout=open(SIM_LOG, "w"),
+        stderr=subprocess.STDOUT,
+    )
+
+
 @router.post("/mode/sim")
 async def enable_sim_mode():
     """Switch to simulation mode — flight daemon targets sim sysids (+100)."""
     set_sim_mode(True)
-    # Try to start the simulator
     try:
-        subprocess.Popen(
-            ["/opt/roban-swarm/venv/bin/python3", "-u", "/opt/roban-swarm/mavlink-sim.py", "--helis", "2"],
-            stdout=open("/tmp/mavlink-sim.log", "w"),
-            stderr=subprocess.STDOUT,
-        )
+        _start_sim()
         log.info("SIM mode enabled — simulator started")
     except Exception as e:
         log.warning("SIM mode enabled but simulator failed to start: %s", e)
@@ -91,15 +106,11 @@ async def reset_sim():
     except Exception:
         pass
 
-    import time
-    time.sleep(2)
+    import asyncio
+    await asyncio.sleep(2)
 
     try:
-        subprocess.Popen(
-            ["/opt/roban-swarm/venv/bin/python3", "-u", "/opt/roban-swarm/mavlink-sim.py", "--helis", "2"],
-            stdout=open("/tmp/mavlink-sim.log", "w"),
-            stderr=subprocess.STDOUT,
-        )
+        _start_sim()
         log.info("SIM helis reset — simulator restarted")
         return {"ok": True, "detail": "Simulator restarted"}
     except Exception as e:
