@@ -306,6 +306,32 @@ footer {
 .emergency-controls { margin-top: 8px; }
 .emergency-controls .btn-danger { font-size: 1.1rem; padding: 8px 20px; }
 
+/* Show two-column layout */
+.show-two-col { display: flex; gap: 16px; margin-top: 12px; }
+.show-col-left { flex: 1; min-width: 0; }
+.show-col-right { width: 420px; flex-shrink: 0; }
+@media (max-width: 900px) { .show-two-col { flex-direction: column; } .show-col-right { width: 100%; } }
+
+/* Operation button states */
+.btn-op { background: var(--bg3); color: var(--fg); border: 2px solid var(--fg2); border-radius: var(--radius); padding: 6px 16px; cursor: pointer; font-size: 0.9rem; transition: all 0.3s; }
+.btn-op:disabled { opacity: 0.4; cursor: default; }
+.btn-op.btn-green { background: #00c851; color: #000; border-color: #00c851; }
+.btn-op.btn-yellow { background: #ffbb33; color: #000; border-color: #ffbb33; }
+.btn-op.btn-red { background: #ff4444; color: #fff; border-color: #ff4444; }
+@keyframes blink-yg { 0%, 49% { background: #ffbb33; border-color: #ffbb33; } 50%, 100% { background: #00c851; border-color: #00c851; } }
+.btn-op.btn-blink { animation: blink-yg 0.8s infinite; color: #000; }
+
+/* Telemetry readout */
+.telem-list { font-family: monospace; font-size: 0.8rem; }
+.telem-card { background: var(--bg2); border: 1px solid var(--bg3); border-radius: var(--radius); padding: 6px 10px; margin-bottom: 6px; }
+.telem-card .telem-hdr { font-weight: bold; margin-bottom: 4px; }
+.telem-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.telem-row span { white-space: nowrap; }
+.telem-lbl { color: var(--fg2); }
+
+/* 2D Map canvas */
+#show-map { background: #0a0a1a; border: 1px solid var(--bg3); border-radius: var(--radius); width: 100%; aspect-ratio: 1; }
+
 /* Sim mode */
 .header-badges { display: flex; gap: 8px; align-items: center; }
 .badge-sim { background: #ff9800; color: #000; padding: 4px 12px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; cursor: pointer; border: none; }
