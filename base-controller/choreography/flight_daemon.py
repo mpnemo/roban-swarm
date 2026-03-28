@@ -45,7 +45,7 @@ STAGING_ARRIVAL_TOL = 1.0       # Meters — close enough to start position
 # Landing
 RETURN_BASE_ALT_M = 8.0         # Base altitude for return flight
 RETURN_ALT_STEP_M = 3.0         # Per-heli altitude step during return
-LANDING_DESCENT_RATE = 0.5      # m/s target descent rate
+LANDING_DESCENT_RATE = 1.0      # m/s target descent rate (was 0.5 — too slow)
 LANDING_DETECT_ALT_M = 0.3      # Below this = landed
 LANDING_DETECT_TIME_S = 1.5     # Hysteresis
 
@@ -594,9 +594,9 @@ class FlightDaemon:
             for idx, heli_id in enumerate(heli_ids):
                 return_alts[heli_id] = -(RETURN_BASE_ALT_M + idx * RETURN_ALT_STEP_M)
 
-            # Fly all simultaneously — wait for all to arrive
+            # Fly all simultaneously — wait for all to arrive (or 10s max)
             arrived = set()
-            deadline = time.monotonic() + 30  # 30s max (was 60)
+            deadline = time.monotonic() + 10  # 10s max — helis should be close already
             while self._state == DaemonState.LANDING:
                 for heli_id in heli_ids:
                     home = self._lineup.home_positions[heli_id]
@@ -607,15 +607,15 @@ class FlightDaemon:
                         if v:
                             cn, ce, _ = self._gps_to_ned(v["lat"], v["lon"], v.get("alt_m", 0))
                             horiz = math.sqrt((cn - home.n)**2 + (ce - home.e)**2)
-                            if horiz <= 2.0:
+                            if horiz <= 5.0:  # 5m tolerance (was 2m — too tight for GPS)
                                 arrived.add(heli_id)
-                                log.info("Heli%02d over home position", heli_id)
+                                log.info("Heli%02d over home (%.1fm)", heli_id, horiz)
 
                 if len(arrived) == len(heli_ids):
                     log.info("All helis over home — starting descent")
                     break
                 if time.monotonic() > deadline:
-                    log.warning("Return timeout — proceeding to descent")
+                    log.warning("Return timeout — proceeding to descent anyway")
                     break
                 await asyncio.sleep(TICK_INTERVAL)
 

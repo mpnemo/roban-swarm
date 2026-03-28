@@ -66,22 +66,22 @@ const Show = (() => {
             showTracks.textContent = `Helis: ${d.heli_ids.join(', ')}`;
             if (d.safety_warnings && d.safety_warnings.length)
                 d.safety_warnings.forEach(w => appendLog('warn', `Safety: ${w}`));
-            appendLog('info', `Show "${d.name}" loaded — ${d.tracks} tracks, ${d.duration_s}s`);
+            appendLog('info', I18N.t('log_show_loaded').replace('{name}', d.name).replace('{tracks}', d.tracks).replace('{duration}', d.duration_s));
             updateButtons('loaded');
         } catch (e) { alert('Error: ' + e.message); }
     });
 
     btnLineup.addEventListener('click', async () => {
-        appendLog('info', 'Capturing lineup...');
+        appendLog('info', I18N.t('log_capturing_lineup'));
         const r = await fetch('/api/show/lineup', { method: 'POST' });
         const d = await r.json();
         if (!r.ok) { (d.detail?.errors || [d.detail]).forEach(e => appendLog('warn', `Lineup: ${e}`)); return; }
         showLineup(d.lineup);
-        appendLog('ok', 'Lineup captured — origin computed');
+        appendLog('ok', I18N.t('log_lineup_captured'));
     });
 
     btnPreflight.addEventListener('click', async () => {
-        appendLog('info', 'Running preflight checks...');
+        appendLog('info', I18N.t('log_preflight_running'));
         const r = await fetch('/api/show/preflight', { method: 'POST' });
         const d = await r.json();
         readinessDiv.style.display = '';
@@ -95,11 +95,11 @@ const Show = (() => {
             if (c.fixes && c.fixes.length) hasFixes = true;
         });
         btnFixPreflight.style.display = hasFixes ? '' : 'none';
-        appendLog(d.ok ? 'ok' : 'warn', d.ok ? 'All preflight checks passed' : 'Preflight issues — fix before launch');
+        appendLog(d.ok ? 'ok' : 'warn', d.ok ? I18N.t('log_preflight_ok') : I18N.t('log_preflight_fail'));
     });
 
     btnFixPreflight.addEventListener('click', async () => {
-        appendLog('info', 'Fixing preflight issues...');
+        appendLog('info', I18N.t('log_fixing'));
         const r = await fetch('/api/show/preflight/fix', { method: 'POST' });
         const d = await r.json();
         d.results.forEach(res => appendLog(res.ok ? 'ok' : 'warn',
@@ -109,42 +109,42 @@ const Show = (() => {
 
     btnLaunch.addEventListener('click', async () => {
         if (!confirm(I18N.t('confirm_launch'))) return;
-        appendLog('info', 'LAUNCH sequence starting...');
+        appendLog('info', I18N.t('log_launch'));
         const r = await fetch('/api/show/launch', { method: 'POST' });
-        if (!r.ok) { const d = await r.json(); appendLog('danger', `Launch failed: ${d.detail}`); }
+        if (!r.ok) { const d = await r.json(); appendLog('danger', `${I18N.t('log_launch_fail')}: ${d.detail}`); }
     });
 
     btnGo.addEventListener('click', async () => {
         await fetch('/api/show/go', { method: 'POST' });
-        appendLog('info', 'Show GO!');
+        appendLog('info', I18N.t('log_go'));
     });
 
     btnPause.addEventListener('click', async () => {
         await fetch('/api/show/pause', { method: 'POST' });
-        appendLog('info', 'Show PAUSED');
+        appendLog('info', I18N.t('log_paused'));
     });
 
     btnResume.addEventListener('click', async () => {
         await fetch('/api/show/resume', { method: 'POST' });
-        appendLog('info', 'Show RESUMED');
+        appendLog('info', I18N.t('log_resumed'));
     });
 
     btnLand.addEventListener('click', async () => {
         if (!confirm(I18N.t('confirm_land'))) return;
         await fetch('/api/show/land', { method: 'POST' });
-        appendLog('info', 'Landing sequence started');
+        appendLog('info', I18N.t('log_landing'));
     });
 
     btnRtl.addEventListener('click', async () => {
         if (!confirm(I18N.t('confirm_rtl'))) return;
         await fetch('/api/show/rtl', { method: 'POST' });
-        appendLog('danger', 'RTL ALL — ArduPilot in control');
+        appendLog('danger', I18N.t('log_rtl'));
     });
 
     btnStop.addEventListener('click', async () => {
         if (!confirm(I18N.t('confirm_stop'))) return;
         await fetch('/api/show/stop', { method: 'POST' });
-        appendLog('danger', 'EMERGENCY STOP — all helis braking');
+        appendLog('danger', I18N.t('log_stop'));
     });
 
     // ================================================================

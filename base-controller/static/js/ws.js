@@ -96,7 +96,7 @@ async function resetSim() {
         const d = await r.json();
         if (d.ok) {
             if (typeof Show !== 'undefined' && Show.appendLog)
-                Show.appendLog('info', 'SIM helis reset — back online');
+                Show.appendLog('info', I18N.t('log_sim_reset'));
         } else {
             alert('Reset failed: ' + (d.error || 'unknown'));
         }
