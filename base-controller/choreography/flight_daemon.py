@@ -438,7 +438,11 @@ class FlightDaemon:
             await asyncio.sleep(TICK_INTERVAL)
 
     async def _fly_to_start_positions(self, heli_ids: list[int]):
-        """Fly all helis from hover to their show start positions."""
+        """Fly all helis from hover to their show start positions.
+
+        Two-phase: first fly horizontally at hover altitude,
+        then descend to the actual start altitude.
+        """
         targets = {}
         for heli_id in heli_ids:
             track = next(t for t in self._show.tracks if t.heli_id == heli_id)
@@ -447,28 +451,57 @@ class FlightDaemon:
             self._heli_phases[heli_id] = HeliPhase.TRAVERSING
 
         await self._emit_phase_progress()
+        await self._emit_event({"type": "show_event", "event": "staging_traverse"})
 
-        # Fly all simultaneously
-        deadline = time.monotonic() + 60  # 60s max for staging
+        # Phase 1: Fly horizontally at hover altitude to target N/E
+        log.info("Staging phase 1: horizontal traverse at hover altitude")
+        arrived_horiz = set()
+        deadline = time.monotonic() + 30
         while self._state == DaemonState.STAGING:
-            all_arrived = True
+            for heli_id in heli_ids:
+                t = targets[heli_id]
+                # Keep at hover altitude, fly to target N/E
+                await self._send_safe(heli_id, t.n, t.e, -(HOVER_ALT_M))
+
+                if heli_id not in arrived_horiz:
+                    v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
+                    if v:
+                        cn, ce, _ = self._gps_to_ned(v["lat"], v["lon"], v.get("alt_m", 0))
+                        horiz = math.sqrt((cn - t.n)**2 + (ce - t.e)**2)
+                        if horiz <= STAGING_ARRIVAL_TOL:
+                            arrived_horiz.add(heli_id)
+                            log.info("Heli%02d over start position (%.1fm)", heli_id, horiz)
+
+            if len(arrived_horiz) == len(heli_ids):
+                log.info("All helis over start positions — descending")
+                break
+            if time.monotonic() > deadline:
+                log.warning("Horizontal staging timeout — descending anyway")
+                break
+            await asyncio.sleep(TICK_INTERVAL)
+
+        # Phase 2: Descend to actual start altitude
+        log.info("Staging phase 2: descend to start altitude")
+        arrived_3d = set()
+        deadline = time.monotonic() + 20
+        while self._state == DaemonState.STAGING:
             for heli_id in heli_ids:
                 t = targets[heli_id]
                 await self._send_safe(heli_id, t.n, t.e, t.d)
 
-                v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
-                if v:
-                    cn, ce, cd = self._gps_to_ned(v["lat"], v["lon"], v.get("alt_m", 0))
-                    dist = math.sqrt((cn - t.n)**2 + (ce - t.e)**2 + (cd - t.d)**2)
-                    if dist > STAGING_ARRIVAL_TOL:
-                        all_arrived = False
+                if heli_id not in arrived_3d:
+                    v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
+                    if v:
+                        cn, ce, cd = self._gps_to_ned(v["lat"], v["lon"], v.get("alt_m", 0))
+                        dist = math.sqrt((cn - t.n)**2 + (ce - t.e)**2 + (cd - t.d)**2)
+                        if dist <= STAGING_ARRIVAL_TOL:
+                            arrived_3d.add(heli_id)
 
-            if all_arrived:
+            if len(arrived_3d) == len(heli_ids):
                 break
             if time.monotonic() > deadline:
-                log.warning("Staging timeout — proceeding anyway")
+                log.warning("Descent staging timeout — proceeding")
                 break
-
             await asyncio.sleep(TICK_INTERVAL)
 
     # ================================================================
