@@ -190,6 +190,28 @@ const Show = (() => {
             appendLog(level, text);
         } else if (msg.type === 'rtl_triggered') {
             appendLog('danger', `RTL triggered for helis: ${msg.heli_ids.join(', ')}`);
+        } else if (msg.type === 'safety_warning') {
+            // In-flight monitor warnings (heartbeat loss, RTK degradation, NTRIP)
+            const w = msg.warning;
+            const hid = msg.heli_id ? String(msg.heli_id).padStart(2, '0') : '';
+            let key = '';
+            if (w === 'heartbeat_lost') key = 'warn_heartbeat_lost';
+            else if (w === 'show_paused_heartbeat') key = 'warn_show_paused_heartbeat';
+            else if (w === 'rtl_heartbeat_loss') key = 'warn_rtl_heartbeat';
+            else if (w === 'rtk_degraded') key = 'warn_rtk_degraded';
+            else if (w === 'rtl_gps_lost') key = 'warn_rtl_gps_lost';
+            else if (w === 'ntrip_unhealthy') key = 'warn_ntrip_unhealthy';
+            const text = key ? I18N.t(key).replace('{id}', hid) : msg.detail;
+            const level = w.startsWith('rtl_') ? 'danger' : 'warn';
+            appendLog(level, text);
+        } else if (msg.type === 'safety_info') {
+            const i = msg.info;
+            const hid = msg.heli_id ? String(msg.heli_id).padStart(2, '0') : '';
+            let key = '';
+            if (i === 'heartbeat_recovered') key = 'warn_heartbeat_recovered';
+            else if (i === 'ntrip_recovered') key = 'warn_ntrip_recovered';
+            const text = key ? I18N.t(key).replace('{id}', hid) : (msg.detail || i);
+            appendLog('ok', text);
         }
     });
 

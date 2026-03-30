@@ -7,19 +7,21 @@ const Dashboard = (() => {
 
     function fixLabel(fixType) {
         switch (fixType) {
-            case 6: return '<span class="fix-rtk">RTK</span>';
-            case 5: return '<span class="fix-rtk">Float</span>';
-            case 4: return '<span class="fix-rtk">RTK Float</span>';
-            case 3: return '<span class="fix-3d">3D</span>';
-            case 2: return '<span class="fix-3d">2D</span>';
-            default: return '<span class="fix-none">No Fix</span>';
+            case 6: return `<span class="fix-rtk">${I18N.t('gps_rtk')}</span>`;
+            case 5: return `<span class="fix-rtk">${I18N.t('gps_float')}</span>`;
+            case 4: return `<span class="fix-rtk">${I18N.t('gps_float')}</span>`;
+            case 3: return `<span class="fix-3d">${I18N.t('gps_3d')}</span>`;
+            case 2: return `<span class="fix-3d">${I18N.t('gps_2d')}</span>`;
+            default: return `<span class="fix-none">${I18N.t('gps_nofix')}</span>`;
         }
     }
 
     let paramStatus = {};  // heli_id -> {needs_check, sysid_ok}
 
     function renderCard(heli) {
-        const v = vehicles[heli.sysid] || {};
+        // In sim mode, telemetry arrives under sysid+100
+        const simOffset = (typeof _simMode !== 'undefined' && _simMode) ? 100 : 0;
+        const v = vehicles[heli.sysid + simOffset] || vehicles[heli.sysid] || {};
         const online = v.online || false;
         const ps = paramStatus[heli.id];
         const paramWarn = ps && (ps.needs_check || !ps.sysid_ok);
@@ -31,15 +33,15 @@ const Dashboard = (() => {
                 <span class="heli-status ${online ? 'online' : 'offline'}"></span>
             </div>
             <div class="heli-stats">
-                <span class="label">IP</span><span class="value">${heli.ip}</span>
-                <span class="label">GPS</span><span class="value">${fixLabel(v.gps_fix || 0)}</span>
-                <span class="label">Sats</span><span class="value">${v.sats != null ? v.sats : '-'}</span>
-                <span class="label">HDOP</span><span class="value">${v.hdop != null ? v.hdop.toFixed(1) : '-'}</span>
-                <span class="label">Batt</span><span class="value">${v.battery_pct != null ? v.battery_pct + '%' : '-'}</span>
-                <span class="label">Mode</span><span class="value">${v.flight_mode || '-'}</span>
-                <span class="label">Armed</span><span class="value">${v.armed ? 'YES' : 'No'}</span>
-                <span class="label">SysID</span><span class="value">${heli.sysid}</span>
-                <span class="label">FW</span><span class="value">${v.fw_version || '-'}</span>
+                <span class="label">${I18N.t('lbl_ip')}</span><span class="value">${heli.ip}</span>
+                <span class="label">${I18N.t('lbl_gps')}</span><span class="value">${fixLabel(v.gps_fix || 0)}</span>
+                <span class="label">${I18N.t('lbl_sats')}</span><span class="value">${v.sats != null ? v.sats : '-'}</span>
+                <span class="label">${I18N.t('lbl_hdop')}</span><span class="value">${v.hdop != null ? v.hdop.toFixed(1) : '-'}</span>
+                <span class="label">${I18N.t('lbl_batt')}</span><span class="value">${v.battery_pct != null ? v.battery_pct + '%' : '-'}</span>
+                <span class="label">${I18N.t('lbl_mode')}</span><span class="value">${v.flight_mode || '-'}</span>
+                <span class="label">${I18N.t('lbl_armed')}</span><span class="value">${v.armed ? I18N.t('lbl_yes') : I18N.t('lbl_no')}</span>
+                <span class="label">${I18N.t('lbl_sysid')}</span><span class="value">${heli.sysid}${simOffset ? ` (sim: ${heli.sysid + simOffset})` : ''}</span>
+                <span class="label">${I18N.t('lbl_fw')}</span><span class="value">${v.fw_version || '-'}</span>
             </div>
             <div class="heli-actions">
                 <button onclick="Dashboard.configHeli(${heli.id})">Config</button>

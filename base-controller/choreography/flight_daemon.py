@@ -58,6 +58,20 @@ MIN_RTK_FIX = 5                 # RTK Float minimum for lineup
 MIN_GPS_FIX = 3                 # 3D fix minimum for arm
 MIN_BATTERY_PCT = 20            # Minimum battery for arm
 
+# In-flight monitoring
+HEARTBEAT_LOST_PAUSE_S = 5.0   # Pause show if heli offline for this long
+HEARTBEAT_LOST_RTL_S = 15.0    # RTL ALL if heli offline for this long
+RTK_WARN_FIX = 5               # Below RTK Float → warn
+RTK_CRITICAL_FIX = 3           # Below 3D fix → RTL
+NTRIP_STALE_S = 15.0           # No RTCM bytes for this long → warn
+
+# Required FC failsafe parameters (checked+fixed in preflight)
+REQUIRED_FAILSAFE_PARAMS = {
+    "FS_GCS_ENABLE":   1,      # RTL on GCS heartbeat loss (OPi or WiFi dies)
+    "FS_THR_ENABLE":   1,      # RTL on RC/throttle loss
+    "BATT_FS_LOW_ACT": 2,      # RTL on low battery
+}
+
 # NED
 M_PER_DEG_LAT = 111319.5
 
@@ -95,6 +109,7 @@ class FlightDaemon:
         self._lineup: LineupData | None = None
         self._state = DaemonState.IDLE
         self._task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task | None = None
         self._start_time: float = 0.0
         self._pause_elapsed: float = 0.0
         self._tick_count: int = 0
@@ -234,9 +249,10 @@ class FlightDaemon:
         return {"ok": True, "lineup": self._lineup.to_dict(), "errors": []}
 
     async def preflight(self) -> list[dict]:
-        """Run preflight checks including RTL_ALT verification.
+        """Run preflight checks: GPS, battery, failsafe params, RTL_ALT, NTRIP.
 
         Returns list of {"heli_id": int, "ok": bool, "detail": str, "fixes": [...]}
+        Hard gates — ALL must pass before arming is allowed.
         """
         if self._state not in (DaemonState.LINEUP_READY, DaemonState.PREFLIGHT_OK):
             return [{"heli_id": 0, "ok": False, "detail": f"Cannot preflight in state {self._state}"}]
@@ -246,6 +262,16 @@ class FlightDaemon:
         checks = []
         all_ok = True
         heli_ids = sorted(self._show.get_heli_ids())
+        from api._state import is_sim_mode
+
+        # --- Global check: NTRIP caster health (real mode only) ---
+        if not is_sim_mode():
+            ntrip_ok = await self._check_ntrip_health()
+            if not ntrip_ok:
+                checks.append({"heli_id": 0, "ok": False,
+                               "detail": "NTRIP caster not active or no RTCM output",
+                               "fixes": []})
+                all_ok = False
 
         for idx, heli_id in enumerate(heli_ids):
             sysid = self._sysid(heli_id)
@@ -262,22 +288,21 @@ class FlightDaemon:
             if not v["online"]:
                 issues.append("OFFLINE")
 
-            # GPS check
+            # GPS check — hard gate
             fix = v.get("gps_fix", 0)
             if fix < MIN_GPS_FIX:
                 issues.append(f"GPS fix={fix} (need ≥3)")
             elif fix < MIN_RTK_FIX:
                 issues.append(f"GPS {fix} (recommend RTK Float+)")
 
-            # Battery
+            # Battery — hard gate
             batt = v.get("battery_pct")
             if batt is not None and batt < MIN_BATTERY_PCT:
                 issues.append(f"Battery {batt}% (need ≥{MIN_BATTERY_PCT}%)")
 
-            # Check RTL_ALT — must be staggered (skip in sim mode)
-            from api._state import is_sim_mode
-            expected_rtl_alt = RTL_BASE_ALT_CM + (idx * RTL_STEP_CM)
             if self._sender and not is_sim_mode():
+                # --- RTL_ALT — must be staggered ---
+                expected_rtl_alt = RTL_BASE_ALT_CM + (idx * RTL_STEP_CM)
                 actual_rtl = await asyncio.to_thread(
                     self._sender.read_param, heli_id, "RTL_ALT"
                 )
@@ -286,6 +311,17 @@ class FlightDaemon:
                 elif int(actual_rtl) != expected_rtl_alt:
                     issues.append(f"RTL_ALT={int(actual_rtl)} (expect {expected_rtl_alt})")
                     fixes.append(("RTL_ALT", expected_rtl_alt))
+
+                # --- Failsafe parameters — hard gate ---
+                for param, expected in REQUIRED_FAILSAFE_PARAMS.items():
+                    actual = await asyncio.to_thread(
+                        self._sender.read_param, heli_id, param
+                    )
+                    if actual is None:
+                        issues.append(f"{param}: no response")
+                    elif int(actual) != expected:
+                        issues.append(f"{param}={int(actual)} (expect {expected})")
+                        fixes.append((param, expected))
 
             if issues:
                 checks.append({"heli_id": heli_id, "ok": False,
@@ -306,8 +342,25 @@ class FlightDaemon:
         await self._emit_status()
         return checks
 
+    async def _check_ntrip_health(self) -> bool:
+        """Check NTRIP caster is running and producing RTCM data."""
+        import subprocess
+        try:
+            r = await asyncio.to_thread(
+                subprocess.run,
+                ["systemctl", "is-active", "ntrip-caster"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r.stdout.strip() != "active":
+                log.warning("Preflight: NTRIP caster not active")
+                return False
+        except Exception as e:
+            log.warning("Preflight: cannot check NTRIP caster: %s", e)
+            return False
+        return True
+
     async def fix_preflight(self) -> list[dict]:
-        """Auto-fix preflight issues (set RTL_ALT, etc.)."""
+        """Auto-fix ALL preflight issues: RTL_ALT, failsafe params."""
         if not self._show or not self._sender:
             return [{"heli_id": 0, "ok": False, "detail": "Not ready"}]
 
@@ -315,6 +368,7 @@ class FlightDaemon:
         results = []
 
         for idx, heli_id in enumerate(heli_ids):
+            # Fix RTL_ALT (staggered)
             expected_rtl_alt = RTL_BASE_ALT_CM + (idx * RTL_STEP_CM)
             ok = await asyncio.to_thread(
                 self._sender.set_rtl_alt, heli_id, expected_rtl_alt
@@ -327,6 +381,20 @@ class FlightDaemon:
             })
             log.info("Set RTL_ALT=%d on Heli%02d: %s",
                      expected_rtl_alt, heli_id, "OK" if ok else "FAIL")
+
+            # Fix failsafe params
+            for param, expected in REQUIRED_FAILSAFE_PARAMS.items():
+                ok = await asyncio.to_thread(
+                    self._sender.set_param, heli_id, param, float(expected)
+                )
+                results.append({
+                    "heli_id": heli_id,
+                    "param": param,
+                    "value": expected,
+                    "ok": ok,
+                })
+                log.info("Set %s=%d on Heli%02d: %s",
+                         param, expected, heli_id, "OK" if ok else "FAIL")
 
         return results
 
@@ -345,6 +413,11 @@ class FlightDaemon:
         """Automated launch sequence."""
         try:
             heli_ids = sorted(self._show.get_heli_ids())
+
+            # Start in-flight monitoring (runs alongside all flight phases)
+            self._monitor_task = asyncio.create_task(
+                self._inflight_monitor(heli_ids)
+            )
 
             # --- Phase 1: ARM ---
             self._state = DaemonState.ARMING
@@ -591,7 +664,7 @@ class FlightDaemon:
                                 DaemonState.DONE, DaemonState.STAGING):
             raise RuntimeError(f"Cannot land in state {self._state}")
 
-        # Cancel any running task
+        # Cancel flight task (but NOT monitor — it keeps watching during landing)
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -726,18 +799,24 @@ class FlightDaemon:
     # EMERGENCY
     # ================================================================
 
+    async def _cancel_tasks(self):
+        """Cancel running flight + monitor tasks."""
+        for task in (self._task, self._monitor_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._task = None
+        self._monitor_task = None
+
     async def rtl_all(self):
         """Emergency RTL — set staggered RTL_ALT, switch all to RTL mode."""
         if not self._show or not self._sender:
             return
 
-        # Cancel any running task
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_tasks()
 
         heli_ids = sorted(self._show.get_heli_ids())
 
@@ -760,12 +839,7 @@ class FlightDaemon:
         prev = self._state
         self._state = DaemonState.IDLE
 
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_tasks()
 
         if self._show and self._sender:
             for track in self._show.tracks:
@@ -780,6 +854,150 @@ class FlightDaemon:
         self._heli_phases = {hid: HeliPhase.IDLE for hid in self._heli_phases}
         log.warning("STOP from state %s — all helis BRAKE", prev)
         await self._emit_status()
+
+    # ================================================================
+    # IN-FLIGHT MONITORING (heartbeat watchdog + RTK quality + NTRIP)
+    # ================================================================
+
+    async def _inflight_monitor(self, heli_ids: list[int]):
+        """Background monitor running during all flight phases.
+
+        Checks:
+        1. Heartbeat watchdog — pause show if heli goes offline, RTL ALL if prolonged
+        2. RTK quality — warn on degradation, RTL if 3D fix lost
+        3. NTRIP caster health — warn if RTCM stops flowing
+        """
+        offline_since: dict[int, float | None] = {h: None for h in heli_ids}
+        rtk_warned: set[int] = set()
+        ntrip_warned = False
+        last_ntrip_check = time.monotonic()
+
+        log.info("In-flight monitor started for %d helis", len(heli_ids))
+
+        try:
+            while self._state in (
+                DaemonState.ARMING, DaemonState.SPOOLING,
+                DaemonState.TAKING_OFF, DaemonState.STAGING,
+                DaemonState.RUNNING, DaemonState.PAUSED,
+                DaemonState.LANDING,
+            ):
+                now = time.monotonic()
+
+                for heli_id in heli_ids:
+                    sysid = self._sysid(heli_id)
+                    v = self._tracker.get(sysid) if self._tracker else None
+
+                    # --- Heartbeat watchdog ---
+                    if v is None or not v.get("online", False):
+                        if offline_since[heli_id] is None:
+                            offline_since[heli_id] = now
+                            log.warning("MONITOR: Heli%02d heartbeat LOST", heli_id)
+                            await self._emit_event({
+                                "type": "safety_warning",
+                                "warning": "heartbeat_lost",
+                                "heli_id": heli_id,
+                                "detail": f"Heli{heli_id:02d} heartbeat lost",
+                            })
+
+                        lost_duration = now - offline_since[heli_id]
+
+                        # Auto-pause if flying and one heli lost for > 5s
+                        if (lost_duration >= HEARTBEAT_LOST_PAUSE_S
+                                and self._state == DaemonState.RUNNING):
+                            log.warning("MONITOR: Heli%02d offline %.0fs — PAUSING show",
+                                        heli_id, lost_duration)
+                            await self.pause()
+                            await self._emit_event({
+                                "type": "safety_warning",
+                                "warning": "show_paused_heartbeat",
+                                "heli_id": heli_id,
+                                "detail": f"Show paused — Heli{heli_id:02d} offline for {lost_duration:.0f}s",
+                            })
+
+                        # RTL ALL if any heli lost for > 15s
+                        if lost_duration >= HEARTBEAT_LOST_RTL_S:
+                            log.error("MONITOR: Heli%02d offline %.0fs — RTL ALL",
+                                      heli_id, lost_duration)
+                            await self._emit_event({
+                                "type": "safety_warning",
+                                "warning": "rtl_heartbeat_loss",
+                                "heli_id": heli_id,
+                                "detail": f"RTL triggered — Heli{heli_id:02d} offline for {lost_duration:.0f}s",
+                            })
+                            await self.rtl_all()
+                            return  # Monitor exits — RTL hands off to ArduPilot
+                    else:
+                        if offline_since[heli_id] is not None:
+                            log.info("MONITOR: Heli%02d heartbeat RECOVERED", heli_id)
+                            await self._emit_event({
+                                "type": "safety_info",
+                                "info": "heartbeat_recovered",
+                                "heli_id": heli_id,
+                            })
+                        offline_since[heli_id] = None
+
+                    # --- RTK quality monitor ---
+                    if v and v.get("online"):
+                        fix = v.get("gps_fix", 0)
+
+                        # Below 3D fix — CRITICAL, RTL ALL immediately
+                        if fix < RTK_CRITICAL_FIX and self._state in (
+                            DaemonState.RUNNING, DaemonState.STAGING,
+                            DaemonState.TAKING_OFF,
+                        ):
+                            log.error("MONITOR: Heli%02d GPS fix=%d — CRITICAL, RTL ALL",
+                                      heli_id, fix)
+                            await self._emit_event({
+                                "type": "safety_warning",
+                                "warning": "rtl_gps_lost",
+                                "heli_id": heli_id,
+                                "detail": f"RTL triggered — Heli{heli_id:02d} lost GPS fix (fix={fix})",
+                            })
+                            await self.rtl_all()
+                            return
+
+                        # Below RTK Float — warn (position degraded but flyable)
+                        if fix < RTK_WARN_FIX and heli_id not in rtk_warned:
+                            rtk_warned.add(heli_id)
+                            fix_names = {0: "NoFix", 1: "NoFix", 2: "2D",
+                                         3: "3D", 4: "DGPS", 5: "Float", 6: "RTK"}
+                            log.warning("MONITOR: Heli%02d RTK degraded → %s",
+                                        heli_id, fix_names.get(fix, str(fix)))
+                            await self._emit_event({
+                                "type": "safety_warning",
+                                "warning": "rtk_degraded",
+                                "heli_id": heli_id,
+                                "detail": f"Heli{heli_id:02d} RTK degraded → {fix_names.get(fix, str(fix))}",
+                            })
+                        elif fix >= RTK_WARN_FIX and heli_id in rtk_warned:
+                            rtk_warned.discard(heli_id)
+                            log.info("MONITOR: Heli%02d RTK recovered", heli_id)
+
+                # --- NTRIP caster health (check every 10s, real mode only) ---
+                from api._state import is_sim_mode
+                if not is_sim_mode() and (now - last_ntrip_check) > 10.0:
+                    last_ntrip_check = now
+                    ntrip_ok = await self._check_ntrip_health()
+                    if not ntrip_ok and not ntrip_warned:
+                        ntrip_warned = True
+                        log.warning("MONITOR: NTRIP caster unhealthy — RTK corrections may stop")
+                        await self._emit_event({
+                            "type": "safety_warning",
+                            "warning": "ntrip_unhealthy",
+                            "detail": "NTRIP caster stopped — RTK corrections interrupted",
+                        })
+                    elif ntrip_ok and ntrip_warned:
+                        ntrip_warned = False
+                        log.info("MONITOR: NTRIP caster recovered")
+
+                await asyncio.sleep(1.0)  # Monitor runs at 1Hz
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.error("In-flight monitor error: %s", e, exc_info=True)
+
+        log.info("In-flight monitor stopped")
 
     # ================================================================
     # HELPERS

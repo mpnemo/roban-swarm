@@ -18,6 +18,10 @@ EXPECTED_PARAMS = {
     "GPS_AUTO_CONFIG": 0,
     "SERIAL2_PROTOCOL": 2,
     "SERIAL2_BAUD": 115,  # 115 = 115200 (ArduPilot uses baud/1000)
+    # Failsafe params — critical for flight safety
+    "FS_GCS_ENABLE": 1,       # RTL on GCS heartbeat loss (OPi/WiFi dies)
+    "FS_THR_ENABLE": 1,       # RTL on RC/throttle loss
+    "BATT_FS_LOW_ACT": 2,     # RTL on low battery
 }
 
 

@@ -909,3 +909,250 @@ MAVLink telemetry pipeline, show file format, and flight daemon skeleton.
 | 7. Show format + daemon | **DONE** | Schema v1, flight daemon skeleton |
 
 **Phase 2β is COMPLETE.** Next: Phase 3 (scale to 2→10 helis).
+
+---
+
+## Session 12 — 2026-03-25 (Phase 3: Heli02 + Golden Image + Flight Ops)
+
+**Goal:** Scale to 2 helis, build golden SD image, complete flight operations system.
+
+### Golden SD Image
+
+Created production image for cloning:
+1. `dd if=/dev/rdisk4 of=roban-heli-golden.raw bs=4m` — 59GB raw image from Heli01 SD card
+2. PiShrink via Docker (Mac): 59GB → 3.7GB compressed image
+3. Stored as `images/roban-heli-golden.img` (not in git — too large)
+4. Flash to ≥32GB SD cards, Armbian auto-expands on first boot
+
+### Heli02 Provisioned
+
+- Flashed golden image to new SD card, booted OPi Zero 2W
+- WiFi password was wrong in golden image (`dopedope` instead of `Robanswarm`) — patched
+- Auto-provisioned via captive portal → assigned heli_id=2, SYSID=12
+- DHCP reservation: `192.168.50.102`, MAC registered in fleet controller
+- SSH: `sshpass -p 'dopedope' ssh -J roban-swarm@192.168.3.119 root@192.168.50.102`
+
+### Heli02 LC29HEA Baud Fix
+
+LC29HEA on Heli02 still at factory 460800 (H618 can't do this baud — 8.5% error).
+- Connected LC29HEA via USB to base station temporarily
+- Sent `$PAIR864,0,0,115200*1B` at 460800 to switch baud
+- Sent `$PQTMSAVEPAR*5A` at 115200 to persist
+- Power cycled, verified 115200 output on OPi UART5
+
+### Heli02 FC Setup
+
+- FC SERIAL2_BAUD was 57 (57600) — fixed to 111 (115200) to match mavlink-router
+- Set GPS1_TYPE=14, GPS_AUTO_CONFIG=0, SYSID_THISMAV=12
+- Set H_COL_ANG_MIN=-2, H_COL_ANG_MAX=12 (clear pre-arm)
+- Set ARMING_CHECK=0 (testing only — no compass/accel cal yet)
+- Both Heli01 and Heli02 showing on dashboard with telemetry ✅
+
+### FC Parameter Check/Fix Button
+
+Added param verification to fleet dashboard:
+- Checks GPS1_TYPE, GPS_AUTO_CONFIG, SERIAL2_BAUD, SERIAL2_PROTOCOL, SYSID_THISMAV
+- "Check Params" and "Fix Params" buttons per heli on fleet page
+- Auto-fix writes correct values and reboots FC
+
+### Telemetry Auto-Request Fix
+
+Dashboard only showed data when Mission Planner was connected — FC doesn't auto-stream.
+- Fixed: hub_client.py now sends REQUEST_DATA_STREAM (all streams @ 4Hz) to each
+  new FC on first heartbeat detection
+- Also requests AUTOPILOT_VERSION for firmware version display on dashboard
+
+---
+
+## Session 13 — 2026-03-27 (Flight Operations + SIM Mode + i18n)
+
+**Goal:** Complete flight operations system, SIM mode, internationalization.
+
+### Flight Daemon — Complete Rewrite
+
+Replaced skeleton with full field-ready flight operations:
+
+**State machine:**
+IDLE → LOADED → LINEUP_READY → PREFLIGHT_OK → ARMING → SPOOLING → TAKING_OFF → STAGING → RUNNING ⇄ PAUSED → LANDING → DONE
+
+**Lineup capture** (`capture_lineup()`):
+- Reads GPS position from all helis via vehicle_tracker
+- Requires RTK Float minimum (fix ≥ 5) for accuracy
+- Computes centroid as NED origin (home_lat, home_lon, home_alt)
+- Stores per-heli home positions as NED offsets from origin
+
+**Preflight checks:**
+- GPS fix ≥ 3D, battery ≥ 20%, heli online
+- RTL_ALT staggered per heli: 1500cm + (index × 300cm) — verified and auto-fixed
+- Failsafe params: FS_GCS_ENABLE=1, FS_THR_ENABLE=1, BATT_FS_LOW_ACT=2
+- NTRIP caster health check (real mode only)
+- All checks are hard gates — must pass before arming allowed
+
+**Launch sequence** (`launch()`):
+1. Switch all helis to GUIDED mode
+2. ARM all helis (15s timeout, retry every 3s)
+3. Wait 8s spool time (TradiHeli rotor spin-up)
+4. Parallel takeoff — all helis climb to HOVER_ALT_M (5m) simultaneously
+5. Horizontal traverse — fly to show start positions at hover altitude
+6. Descend to actual start altitude
+7. Hold and wait for GO command
+
+**Show playback:**
+- 20Hz SET_POSITION_TARGET_LOCAL_NED loop with linear interpolation
+- Safety monitor checks every tick (3m min separation, 100m geofence, 50m alt limit)
+- Pause/resume support
+
+**Landing sequence:**
+- Staggered return: each heli climbs to unique altitude (8m + 3m per heli index)
+- Horizontal return to home positions at staggered altitudes
+- Parallel descent at 1.0 m/s
+- Auto-disarm when altitude < 0.3m for 1.5s
+
+**RTL failsafe:**
+- Sets RTL_ALT per heli (staggered for collision-free failsafe)
+- Switches all helis to RTL mode simultaneously
+
+### In-Flight Safety Monitoring
+
+Added to flight_daemon.py:
+- **Heartbeat watchdog:** Pauses show if any heli offline >5s, RTL ALL if offline >15s
+- **RTK quality monitor:** Warns if fix drops below RTK Float, RTL ALL if below 3D fix
+- **NTRIP health:** Warns if no RTCM bytes for >15s (GPS will degrade to standalone)
+- Background `_monitor_task` runs parallel to show playback loop
+
+### Command Routing Fix
+
+CommandSender originally used per-heli UDP — didn't work because mavlink-hub Server
+endpoints don't route responses. Switched all commands to TCP 5760 (shared connection
+via hub_client). ARM, mode change, param read/write all work reliably now.
+
+### SIM Mode
+
+- Toggle on dashboard switches between SIM and REAL mode
+- SIM starts `tools/mavlink-sim.py` — Python MAVLink simulator
+  - Per-heli TCP connections to mavlink-hub TCP 5760
+  - Sends HEARTBEAT, GPS_RAW_INT, ATTITUDE, VFR_HUD, SYS_STATUS, BATTERY_STATUS
+  - Responds to ARM/DISARM, SET_MODE, SET_POSITION_TARGET (simulates movement)
+  - 2 sim helis at sysid 111, 112 (real +100 offset)
+  - 5m spacing between helis (> 3m safety minimum)
+- "Reset SIM" button restarts simulator after stop/RTL
+- SIM banner on dashboard when active
+
+### Show UI
+
+- Operations toolbar: Upload → Lineup → Preflight → Launch → GO → Land
+- Button color states: green (active), yellow (waiting), blinking yellow-green (ready)
+- Per-heli telemetry cards with position/speed/altitude during show
+- 2D NED canvas map with moving heli symbols, grid lines, scale bar
+- WebSocket `show_event` messages for state transitions
+
+### Internationalization (i18n)
+
+Added 4-language support: English, German, Spanish, Chinese
+- `static/js/lang.js` — translation dictionary + `I18N.t(key)` function
+- Language selector dropdown in page header
+- All UI labels, button text, phase names, log messages, confirmation dialogs translated
+- `data-i18n` attributes on HTML elements for automatic translation on language switch
+
+### Staging Sequence Fix
+
+User reported helis were climbing and moving laterally at the same time during staging.
+Split `_fly_to_start_positions()` into two phases:
+1. Horizontal traverse at hover altitude (no altitude change)
+2. Descend to actual start altitude once positioned over target
+
+### Issues Encountered
+
+| # | Issue | Resolution | Status |
+|---|-------|-----------|--------|
+| 1 | ARM via UDP doesn't work | Use TCP 5760 shared connection via hub_client | Fixed |
+| 2 | ARM timeout 5s too short | Increased to 15s with 3s retry | Fixed |
+| 3 | FC doesn't auto-stream telemetry | REQUEST_DATA_STREAM on first heartbeat | Fixed |
+| 4 | SITL binary crashes on base station | Wrote Python MAVLink simulator instead | Fixed |
+| 5 | Sim helis offline (TCP conflict) | Per-heli TCP connections to mavlink-hub | Fixed |
+| 6 | Permission denied on /tmp/mavlink-sim.log | Fixed log path permissions in mode.py | Fixed |
+| 7 | Safety violation at 3m spacing | Increased HELI_SPACING_M from 3.0 to 5.0 | Fixed |
+| 8 | Return-to-home timeout too tight | 10s timeout, 5m tolerance | Fixed |
+| 9 | Helis climb+move simultaneously | Split staging: climb first, traverse, descend | Fixed |
+| 10 | Landing descent too slow (0.5 m/s) | Increased to 1.0 m/s | Fixed |
+| 11 | Phase labels not translated | Added i18n keys for all HeliPhase values | Fixed |
+
+---
+
+## Session 14 — 2026-03-30 (Safety Interlocks + Preflight Hardening)
+
+**Goal:** Add comprehensive safety interlocks for field readiness.
+
+### Expanded Preflight Checks
+
+Added hard gates that must ALL pass before arming is allowed:
+- **Failsafe params:** FS_GCS_ENABLE=1, FS_THR_ENABLE=1, BATT_FS_LOW_ACT=2
+  - These ensure ArduPilot triggers RTL on GCS loss, throttle loss, or low battery
+  - Auto-fixable from preflight UI
+- **RTL_ALT staggered:** Each heli gets unique return altitude (1500cm + index×300cm)
+  - Prevents collision during failsafe RTL
+- **NTRIP caster health:** Verifies RTCM corrections are flowing before arm (real mode)
+
+### In-Flight Monitoring (background task)
+
+New `_monitor_task` runs parallel to show playback:
+- **Heartbeat watchdog:** Pause show if heli offline >5s; RTL ALL if >15s
+- **RTK quality monitor:** Warn if fix drops below Float; RTL ALL if below 3D fix
+- **NTRIP stale detection:** Warn if no RTCM for >15s (GPS degrades to standalone)
+
+### Failsafe Chain Analysis
+
+What happens in each failure scenario:
+1. **WiFi lost (OPi → base):** mavlink-router on OPi loses base endpoint, FC continues
+   flying last target. FS_GCS_ENABLE=1 on FC triggers RTL after GCS timeout (default 5s).
+   Staggered RTL_ALT prevents collision.
+2. **OPi dies (power/crash):** No more SET_POSITION_TARGET to FC. FC GCS failsafe
+   triggers RTL. Same as WiFi loss from FC perspective.
+3. **NTRIP lost (base caster down):** LC29HEA degrades from RTK to standalone GPS
+   (~2m accuracy). In-flight monitor warns. If fix drops below 3D → RTL ALL.
+4. **RTK fix lost (sky obstruction):** Same as NTRIP loss — monitor watches GPS fix
+   quality continuously.
+5. **Base station dies:** All helis lose GCS heartbeat → FS_GCS_ENABLE triggers RTL
+   on each FC independently. Staggered RTL_ALT prevents collision.
+
+### Files Changed
+
+- `base-controller/choreography/flight_daemon.py` — expanded preflight, in-flight monitor
+- `base-controller/api/params.py` — added failsafe params to check list
+- `base-controller/static/js/show.js` — preflight result display for new checks
+- `base-controller/static/js/lang.js` — translations for new check messages
+- `base-controller/static/index.html` — minor layout updates
+- `base-controller/static/js/dashboard.js` — telemetry card updates
+
+---
+
+## Current Status (as of 2026-03-30)
+
+### Phase Completion
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 0: Pre-hardware | Done | |
+| Phase 1: Base station | Done | All services persisted |
+| Phase 2: First companion | Done | RTK fix verified, custom firmware |
+| Phase 2β: Foundation | **Done** | Controller v0.2.0 at :8080 |
+| Phase 3: Scale to 2→10 | **In progress** | 2 helis working, 8 boards ready to flash |
+| Phase 4: Field RTK | Not started | |
+| Phase 5: Soak test | Not started | |
+| Phase 6: Hardening | Not started | |
+
+### What's Working
+
+- 2 helis (Heli01 + Heli02) with RTK GPS, FC MAVLink, auto-provisioned
+- Web dashboard with live telemetry, 4-language UI, SIM/REAL mode
+- Full flight operations: lineup → preflight → launch → show → land → RTL
+- Safety: collision avoidance, geofence, heartbeat watchdog, RTK monitor
+- Preflight: failsafe params, RTL_ALT stagger, NTRIP health, GPS fix, battery
+- SIM mode with Python MAVLink simulator for desk testing
+
+### Immediate Next Steps
+
+1. **Field test** full show cycle on real hardware (2 helis, props off)
+2. Flash golden image to remaining 8 boards → provision → test at scale
+3. Trajectory planner upgrade: linear interp → jerk-limited S-curves
+4. Production hardening: watchdogs, auto-recovery, logging, post-flight reports

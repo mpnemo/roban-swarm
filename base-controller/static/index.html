@@ -53,7 +53,7 @@
 
         <!-- Fleet manager page -->
         <section id="page-fleet" class="page">
-            <h2>Fleet Manager</h2>
+            <h2 data-i18n="fleet_manager">Fleet Manager</h2>
             <div class="fleet-form">
                 <input type="number" id="add-heli-id" placeholder="Heli ID (1-99)" min="1" max="99">
                 <input type="text" id="add-heli-mac" placeholder="MAC (aa:bb:cc:dd:ee:ff)">
@@ -69,7 +69,7 @@
                 </thead>
                 <tbody id="fleet-tbody"></tbody>
             </table>
-            <button id="btn-apply" class="btn-primary">Apply Changes</button>
+            <button id="btn-apply" class="btn-primary" data-i18n="btn_apply">Apply Changes</button>
         </section>
 
         <!-- Show control page -->
@@ -136,19 +136,19 @@
 
         <!-- Config console page -->
         <section id="page-config" class="page">
-            <h2>Config Console</h2>
+            <h2 data-i18n="config_console">Config Console</h2>
             <div class="config-panel">
-                <label>Select Heli:
+                <label><span data-i18n="select_heli">Select Heli:</span>
                     <select id="config-heli-select"></select>
                 </label>
-                <button id="btn-connect-gcs" class="btn-primary">Connect to GCS</button>
-                <button id="btn-production" class="btn-secondary">Production Mode</button>
+                <button id="btn-connect-gcs" class="btn-primary" data-i18n="btn_connect_gcs">Connect to GCS</button>
+                <button id="btn-production" class="btn-secondary" data-i18n="btn_production">Production Mode</button>
             </div>
             <div id="config-telemetry" class="telemetry-panel">
                 <p class="placeholder">Select a heli and click Connect to GCS.</p>
             </div>
 
-            <h2>Fleet Parameter Map</h2>
+            <h2 data-i18n="fleet_param_map">Fleet Parameter Map</h2>
             <table id="param-map-table" class="param-table">
                 <thead>
                     <tr>
@@ -160,9 +160,9 @@
                 </thead>
                 <tbody id="param-map-tbody"></tbody>
             </table>
-            <button id="btn-check-all-params" class="btn-secondary">Check All Params</button>
+            <button id="btn-check-all-params" class="btn-secondary" data-i18n="btn_check_params">Check All Params</button>
 
-            <h3 id="param-detail-title" style="display:none">Parameter Details</h3>
+            <h3 id="param-detail-title" style="display:none" data-i18n="param_details">Parameter Details</h3>
             <div id="param-detail" style="display:none"></div>
         </section>
     </main>
