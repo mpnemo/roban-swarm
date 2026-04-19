@@ -46,6 +46,10 @@
                 </div>
             </div>
             <h2><span data-i18n="fleet_overview">Fleet Overview</span> <button class="btn-small" onclick="Dashboard.refreshAll()">⟳ <span data-i18n="refresh">Refresh</span></button></h2>
+            <div id="fleet-controls" class="fleet-controls">
+                <button class="btn-swarm" onclick="Dashboard.toggleAll('swarm')">🟢 ALL → Swarm+RTK</button>
+                <button class="btn-rc" onclick="Dashboard.toggleAll('rc')">🔴 ALL → RC+Direct</button>
+            </div>
             <div id="fleet-grid" class="fleet-grid">
                 <p class="placeholder">No vehicles registered. Go to Fleet to add helis.</p>
             </div>

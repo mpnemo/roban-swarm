@@ -54,6 +54,26 @@ async def set_production_mode():
 
 
 SIM_LOG = "/tmp/mavlink-sim.log"
+HUB_CONF = "/etc/mavlink-router/main.conf"
+
+
+def _clean_sitl_endpoints():
+    """Remove stale SITL TCP endpoints from mavlink-hub config and restart hub."""
+    try:
+        with open(HUB_CONF) as f:
+            content = f.read()
+        if "# --- SITL START ---" not in content:
+            return  # nothing to clean
+        import re
+        cleaned = re.sub(r'\n*# --- SITL START ---.*?# --- SITL END ---\n*',
+                         '\n', content, flags=re.DOTALL)
+        with open(HUB_CONF, "w") as f:
+            f.write(cleaned)
+        subprocess.run(["systemctl", "restart", "mavlink-hub"],
+                       capture_output=True, timeout=10)
+        log.info("Cleaned SITL endpoints from mavlink-hub config")
+    except Exception as e:
+        log.warning("Failed to clean SITL endpoints: %s", e)
 
 
 def _start_sim():
@@ -95,6 +115,8 @@ async def disable_sim_mode():
         log.info("SIM mode disabled — simulator stopped")
     except Exception:
         pass
+    # Clean up any stale SITL endpoints from mavlink-hub config
+    _clean_sitl_endpoints()
     return {"mode": _current_mode, "sim_mode": False, "detail": "Real mode active"}
 
 

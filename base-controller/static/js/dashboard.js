@@ -4,6 +4,8 @@ const Dashboard = (() => {
     const grid = document.getElementById('fleet-grid');
     let vehicles = {};  // sysid -> state
     let helis = [];     // fleet list cache
+    let toggleStatus = {};  // heli_id -> {gps_mode, control_mode}
+    let pendingToggles = {};  // 'gps-N' or 'ctrl-N' -> true while waiting for readback
 
     function fixLabel(fixType) {
         switch (fixType) {
@@ -25,6 +27,21 @@ const Dashboard = (() => {
         const online = v.online || false;
         const ps = paramStatus[heli.id];
         const paramWarn = ps && (ps.needs_check || !ps.sysid_ok);
+        const ts = toggleStatus[heli.id] || {};
+        const gpsMode = ts.gps_mode || 'unknown';
+        const controlMode = ts.control_mode || 'unknown';
+        const gpsPending = pendingToggles['gps-' + heli.id] || false;
+        const ctrlPending = pendingToggles['ctrl-' + heli.id] || false;
+        // Lamp states
+        const gpsLamp = gpsPending ? 'pending' : (gpsMode === 'rtk' ? 'confirmed-on' : gpsMode === 'direct' ? 'confirmed-off' : 'unknown');
+        const ctrlLamp = ctrlPending ? 'pending' : (controlMode === 'swarm' ? 'confirmed-on' : controlMode === 'rc' ? 'confirmed-off' : 'unknown');
+        // Slider position
+        const gpsSlider = gpsMode === 'rtk' ? 'on' : gpsMode === 'direct' ? 'off' : 'unknown';
+        const ctrlSlider = controlMode === 'swarm' ? 'on' : controlMode === 'rc' ? 'off' : 'unknown';
+        const gpsBusy = gpsPending ? 'busy' : '';
+        const ctrlBusy = ctrlPending ? 'busy' : '';
+        // Block swarm toggle if GPS not RTK
+        const ctrlDisabled = (!ctrlPending && gpsMode !== 'rtk' && controlMode !== 'swarm') ? 'disabled' : '';
         return `
         <div class="heli-card ${online ? 'online' : 'offline'}" id="card-${heli.id}">
             <div class="heli-header">
@@ -43,9 +60,32 @@ const Dashboard = (() => {
                 <span class="label">${I18N.t('lbl_sysid')}</span><span class="value">${heli.sysid}${simOffset ? ` (sim: ${heli.sysid + simOffset})` : ''}</span>
                 <span class="label">${I18N.t('lbl_fw')}</span><span class="value">${v.fw_version || '-'}</span>
             </div>
+            <div class="heli-toggles">
+                <div class="toggle-row">
+                    <span class="toggle-label">GPS</span>
+                    <span class="toggle-lamp ${gpsLamp}" id="lamp-gps-${heli.id}"></span>
+                    <div class="toggle-slider ${gpsSlider} ${gpsBusy}" id="slider-gps-${heli.id}"
+                         onclick="Dashboard.toggleGPS(${heli.id}, '${gpsMode === 'rtk' ? 'direct' : 'rtk'}')">
+                        <span class="slider-lbl slider-lbl-left">Direct</span>
+                        <span class="slider-lbl slider-lbl-right">RTK</span>
+                        <div class="thumb"></div>
+                    </div>
+                </div>
+                <div class="toggle-row">
+                    <span class="toggle-label">Mode</span>
+                    <span class="toggle-lamp ${ctrlLamp}" id="lamp-ctrl-${heli.id}"></span>
+                    <div class="toggle-slider ${ctrlSlider} ${ctrlBusy} ${ctrlDisabled}" id="slider-ctrl-${heli.id}"
+                         onclick="Dashboard.toggleControl(${heli.id}, '${controlMode === 'swarm' ? 'rc' : 'swarm'}')">
+                        <span class="slider-lbl slider-lbl-left">RC</span>
+                        <span class="slider-lbl slider-lbl-right">Swarm</span>
+                        <div class="thumb"></div>
+                    </div>
+                </div>
+            </div>
             <div class="heli-actions">
                 <button onclick="Dashboard.configHeli(${heli.id})">Config</button>
                 <button onclick="Dashboard.checkParams(${heli.id})">Check Params</button>
+                <button class="btn-reboot" onclick="Dashboard.rebootHeli(${heli.id})" title="Reboot FC">⟳</button>
             </div>
         </div>`;
     }
@@ -86,7 +126,7 @@ const Dashboard = (() => {
         try {
             const r = await fetch('/api/fleet');
             helis = await r.json();
-            renderAll();
+            await refreshToggleStatus();
         } catch (e) {
             grid.innerHTML = '<p class="placeholder">Error loading fleet.</p>';
         }
@@ -148,9 +188,144 @@ const Dashboard = (() => {
         await refresh();
         refreshBase();
         refreshParamStatus();
+        refreshToggleStatus();
     }
 
-    return { refresh, configHeli, checkParams, refreshAll };
+    async function readbackHeli(heliId) {
+        /** Read back toggle status from FC params, update cache + lamps. */
+        try {
+            const r = await fetch(`/api/fleet/${heliId}/toggle/status`);
+            const d = await r.json();
+            toggleStatus[heliId] = d;
+        } catch (e) { /* leave as-is */ }
+        // Clear pending flags for this heli
+        delete pendingToggles['gps-' + heliId];
+        delete pendingToggles['ctrl-' + heliId];
+        renderAll();
+    }
+
+    async function toggleGPS(heliId, newMode) {
+        const label = newMode === 'rtk' ? 'RTK (OPi)' : 'Direct (uBlox)';
+        if (!confirm(`Switch Heli${String(heliId).padStart(2,'0')} GPS to ${label}? FC will reboot.`)) return;
+        // Set pending immediately — lamp goes yellow
+        pendingToggles['gps-' + heliId] = true;
+        renderAll();
+        try {
+            const r = await fetch(`/api/fleet/${heliId}/toggle/gps`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: newMode}),
+            });
+            const d = await r.json();
+            if (!r.ok) {
+                delete pendingToggles['gps-' + heliId];
+                renderAll();
+                alert('Failed: ' + (d.detail || JSON.stringify(d)));
+                return;
+            }
+            // GPS toggle reboots FC — wait for it to come back, then readback
+            setTimeout(() => readbackHeli(heliId), 8000);
+        } catch (e) {
+            delete pendingToggles['gps-' + heliId];
+            renderAll();
+            alert('Error: ' + e.message);
+        }
+    }
+
+    async function toggleControl(heliId, newMode) {
+        const ts = toggleStatus[heliId] || {};
+        if (newMode === 'swarm' && ts.gps_mode !== 'rtk') {
+            alert('Cannot enable Swarm mode without RTK GPS enabled first.');
+            return;
+        }
+        const label = newMode === 'swarm' ? 'Swarm (GUIDED)' : 'RC Manual';
+        if (!confirm(`Switch Heli${String(heliId).padStart(2,'0')} to ${label}?`)) return;
+        pendingToggles['ctrl-' + heliId] = true;
+        renderAll();
+        try {
+            const r = await fetch(`/api/fleet/${heliId}/toggle/control`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: newMode}),
+            });
+            const d = await r.json();
+            if (!r.ok) {
+                delete pendingToggles['ctrl-' + heliId];
+                renderAll();
+                alert('Failed: ' + (d.detail || JSON.stringify(d)));
+                return;
+            }
+            // Control params don't need reboot — readback immediately
+            await readbackHeli(heliId);
+        } catch (e) {
+            delete pendingToggles['ctrl-' + heliId];
+            renderAll();
+            alert('Error: ' + e.message);
+        }
+    }
+
+    async function rebootHeli(heliId) {
+        if (!confirm(`Reboot Heli${String(heliId).padStart(2,'0')} FC? This will interrupt all operations.`)) return;
+        try {
+            await fetch(`/api/fleet/${heliId}/reboot`, {method: 'POST'});
+            // After reboot, readback to confirm state
+            pendingToggles['gps-' + heliId] = true;
+            pendingToggles['ctrl-' + heliId] = true;
+            renderAll();
+            setTimeout(() => readbackHeli(heliId), 8000);
+        } catch (e) { /* ignore */ }
+    }
+
+    async function toggleAll(mode) {
+        const label = mode === 'swarm' ? 'Swarm+RTK' : 'RC+Direct GPS';
+        if (!confirm(`Switch ALL helis to ${label}? FCs will reboot.`)) return;
+        // Set all helis pending
+        for (const h of helis) {
+            pendingToggles['gps-' + h.id] = true;
+            pendingToggles['ctrl-' + h.id] = true;
+        }
+        renderAll();
+        try {
+            const r = await fetch('/api/fleet/toggle/all', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: mode}),
+            });
+            const d = await r.json();
+            if (!r.ok) {
+                // Clear pending
+                for (const h of helis) {
+                    delete pendingToggles['gps-' + h.id];
+                    delete pendingToggles['ctrl-' + h.id];
+                }
+                renderAll();
+                alert('Failed: ' + (d.detail || JSON.stringify(d)));
+                return;
+            }
+            // Readback all helis after reboot delay
+            setTimeout(async () => {
+                for (const h of helis) await readbackHeli(h.id);
+            }, 10000);
+        } catch (e) {
+            for (const h of helis) {
+                delete pendingToggles['gps-' + h.id];
+                delete pendingToggles['ctrl-' + h.id];
+            }
+            renderAll();
+            alert('Error: ' + e.message);
+        }
+    }
+
+    async function refreshToggleStatus() {
+        // Fetch all helis in parallel
+        await Promise.all(helis.map(async (h) => {
+            try {
+                const r = await fetch(`/api/fleet/${h.id}/toggle/status`);
+                const d = await r.json();
+                toggleStatus[h.id] = d;
+            } catch (e) { /* ignore */ }
+        }));
+        renderAll();
+    }
+
+    return { refresh, configHeli, checkParams, refreshAll, toggleGPS, toggleControl, rebootHeli, toggleAll, readbackHeli };
 })();
 
 async function updateModeBadge() {

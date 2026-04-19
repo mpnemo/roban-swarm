@@ -13,6 +13,7 @@ from api.mode import router as mode_router
 from api.show import router as show_router
 from api.base import router as base_router
 from api.params import router as params_router
+from api.toggles import router as toggles_router
 from api._state import set_daemon, set_tracker
 from mavlink.vehicle_tracker import VehicleTracker
 from mavlink.command_sender import CommandSender
@@ -107,6 +108,7 @@ app.include_router(mode_router, prefix="/api")
 app.include_router(show_router, prefix="/api")
 app.include_router(base_router, prefix="/api")
 app.include_router(params_router, prefix="/api")
+app.include_router(toggles_router, prefix="/api")
 
 
 @app.get("/api/health")

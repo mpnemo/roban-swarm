@@ -338,3 +338,119 @@ footer {
 .badge-real { background: var(--green); color: #000; padding: 4px 12px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; cursor: pointer; border: none; }
 .sim-banner { background: #ff9800; color: #000; text-align: center; padding: 6px; font-weight: bold; font-size: 0.9rem; letter-spacing: 1px; }
 .lang-select { background: var(--bg3); color: var(--fg); border: 1px solid var(--fg2); border-radius: 4px; padding: 2px 4px; font-size: 0.8rem; cursor: pointer; }
+
+/* Toggle switches — slider style with indicator lamp */
+.heli-toggles {
+    padding: 8px 12px;
+    border-top: 1px solid #1a2a3a;
+}
+.toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+}
+.toggle-label {
+    font-size: 0.78em;
+    color: #8899aa;
+    width: 42px;
+    text-align: right;
+    flex-shrink: 0;
+}
+/* Lamp: small circle indicating confirmed state */
+.toggle-lamp {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: #333;
+    transition: background 0.3s, box-shadow 0.3s;
+}
+.toggle-lamp.confirmed-on  { background: #00cc55; box-shadow: 0 0 6px #00cc55; }
+.toggle-lamp.confirmed-off { background: #cc4444; box-shadow: 0 0 6px #cc4444; }
+.toggle-lamp.pending       { background: #ffbb33; box-shadow: 0 0 6px #ffbb33; animation: lamp-pulse 0.8s infinite; }
+.toggle-lamp.unknown       { background: #555; }
+@keyframes lamp-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* Slider track */
+.toggle-slider {
+    position: relative;
+    width: 80px; height: 26px;
+    background: #0d1520;
+    border: 1px solid #334455;
+    border-radius: 13px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.2s;
+    flex-shrink: 0;
+}
+.toggle-slider:hover { border-color: #4488aa; }
+.toggle-slider.disabled { opacity: 0.35; pointer-events: none; }
+.toggle-slider.busy { pointer-events: none; }
+
+/* Slider thumb */
+.toggle-slider .thumb {
+    position: absolute;
+    top: 2px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: #667;
+    transition: left 0.25s ease, background 0.25s;
+}
+.toggle-slider.off .thumb { left: 3px; background: #cc4444; }
+.toggle-slider.on  .thumb { left: 55px; background: #00aa44; }
+.toggle-slider.unknown .thumb { left: 28px; background: #555; }
+
+/* Slider labels */
+.toggle-slider .slider-lbl {
+    position: absolute;
+    top: 4px;
+    font-size: 0.65em;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #556677;
+    transition: color 0.2s;
+}
+.toggle-slider .slider-lbl-left  { left: 6px; }
+.toggle-slider .slider-lbl-right { right: 6px; }
+.toggle-slider.on  .slider-lbl-right { color: #fff; }
+.toggle-slider.off .slider-lbl-left  { color: #fff; }
+
+/* Fleet-wide controls */
+.fleet-controls {
+    display: flex;
+    gap: 12px;
+    margin: 8px 0 16px 0;
+}
+.btn-swarm {
+    background: #1a3a2a;
+    color: #44cc66;
+    border: 1px solid #2a5a3a;
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+.btn-swarm:hover { background: #2a4a3a; }
+.btn-rc {
+    background: #3a1a1a;
+    color: #cc6644;
+    border: 1px solid #5a2a2a;
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+.btn-rc:hover { background: #4a2a2a; }
+
+/* Reboot button */
+.btn-reboot {
+    background: #2a1a1a;
+    color: #cc6644;
+    border: 1px solid #5a2a2a;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    min-width: 28px;
+}
+.btn-reboot:hover { background: #4a2a2a; color: #ff8866; }

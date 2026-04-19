@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 Roban Swarm GPS Bridge — reads NMEA from LC29HEA on UART5,
-sends MAVLink GPS_INPUT to mavlink-router via UDP.
+sends MAVLink GPS_INPUT directly to the FC serial port (UART0).
+
+GPS_INPUT is written directly to /dev/ttyS0 (FC UART) instead of going
+through mavlink-router's UDP endpoint.  This prevents the base station's
+mavlink-hub from forwarding GPS_INPUT to OTHER helis and polluting their
+FC's GPS solution.
 
 Also fetches RTCM3 corrections from the base station NTRIP caster
-and writes them to the same serial port (LC29HEA accepts RTCM on its RX line).
-This eliminates the need for a separate str2str ntrip-client process and
-avoids serial port contention.
+and writes them to the GNSS serial port (LC29HEA accepts RTCM on its RX line).
 
 Uses raw os.read() instead of pyserial readline() to work around H618 UART
 driver quirk where poll() reports readiness but read() returns 0 bytes,
@@ -21,12 +24,13 @@ import base64
 import threading
 import select
 import serial
-from pymavlink import mavutil
+from pymavlink.dialects.v20 import ardupilotmega as mavlink2
 
 # Config from environment or defaults
 GNSS_SERIAL = os.environ.get("GNSS_RTCM_SERIAL", "/dev/ttyS5")
 GNSS_BAUD = int(os.environ.get("GNSS_RTCM_BAUD", "115200"))
-MAV_TARGET = os.environ.get("MAV_TARGET", "udpout:127.0.0.1:14570")
+FC_SERIAL = os.environ.get("FC_SERIAL", "/dev/ttyS0")
+FC_BAUD = int(os.environ.get("FC_BAUD", "115200"))
 SYSTEM_ID = int(os.environ.get("MAV_SYSID", "1"))
 COMPONENT_ID = int(os.environ.get("MAV_COMPID", "240"))  # MAV_COMP_ID_GPS
 
@@ -257,18 +261,22 @@ class NtripClient(threading.Thread):
 
 
 def main():
-    print(f"gps-bridge: GNSS={GNSS_SERIAL}@{GNSS_BAUD} → {MAV_TARGET}")
+    print(f"gps-bridge: GNSS={GNSS_SERIAL}@{GNSS_BAUD} → FC={FC_SERIAL}@{FC_BAUD}")
 
     # Open serial port — single owner for both NMEA read and RTCM write
     gnss = serial.Serial(GNSS_SERIAL, GNSS_BAUD, timeout=0)
     fd = gnss.fileno()
 
-    # Open MAVLink UDP connection to mavlink-router
-    mav = mavutil.mavlink_connection(
-        MAV_TARGET,
-        source_system=SYSTEM_ID,
-        source_component=COMPONENT_ID,
-    )
+    # Open FC serial port for direct GPS_INPUT writes.
+    # mavlink-router also opens /dev/ttyS0 — Linux allows multiple processes
+    # to open the same UART. GPS_INPUT frames are small (~75 bytes) and
+    # written atomically, so interleaving with mavlink-router is safe at
+    # 115200 baud.  This avoids GPS_INPUT going through mavlink-router → base
+    # hub → other helis (cross-contamination bug).
+    fc_ser = serial.Serial(FC_SERIAL, FC_BAUD, timeout=0)
+
+    # Create a MAVLink encoder that writes directly to FC serial port
+    mav_encoder = mavlink2.MAVLink(fc_ser, srcSystem=SYSTEM_ID, srcComponent=COMPONENT_ID)
 
     gga = None
     rmc = None
@@ -342,7 +350,7 @@ def main():
                         # ignore_flags: ignore vn/ve/vd, speed_accuracy, vert_accuracy
                         ignore = 0b1111001
 
-                        mav.mav.gps_input_send(
+                        mav_encoder.gps_input_send(
                             int(time.time() * 1e6),  # time_usec
                             0,                        # gps_id
                             ignore,                   # ignore_flags
@@ -399,6 +407,7 @@ def main():
     if ntrip:
         ntrip.stop()
     gnss.close()
+    fc_ser.close()
     print("gps-bridge: stopped")
 
 
