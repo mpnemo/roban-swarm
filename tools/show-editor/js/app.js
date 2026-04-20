@@ -19,14 +19,19 @@ const examplePicker = document.getElementById("example-select");
 const filePicker = document.getElementById("file-picker");
 
 document.getElementById("btn-new").addEventListener("click", () => {
-  if (model.dirty && !confirm("Discard unsaved changes?")) return;
+  if (!confirmDiscard()) return;
   model.newShow();
   canvas.fitAll();
 });
 
 document.getElementById("btn-open").addEventListener("click", () => {
+  if (!confirmDiscard()) return;
   filePicker.click();
 });
+
+function confirmDiscard() {
+  return !model.dirty || confirm("Discard unsaved changes?");
+}
 
 document.getElementById("btn-fit").addEventListener("click", () => {
   canvas.fitAll();
@@ -37,6 +42,15 @@ document.getElementById("btn-save").addEventListener("click", () => {
     alert("Nothing to save — create or load a show first.");
     return;
   }
+  const timing = validateTiming(model.show);
+  if (timing.length > 0) {
+    const first = timing.slice(0, 3).map((e) => "  • " + e.msg).join("\n");
+    const more = timing.length > 3 ? `\n  …and ${timing.length - 3} more` : "";
+    if (!confirm(
+      `This show has ${timing.length} timing error(s):\n\n${first}${more}\n\n` +
+      `The flight daemon will refuse to load it until these are fixed.\n\nSave anyway?`
+    )) return;
+  }
   const text = model.toJson();
   const blob = new Blob([text], { type: "application/json" });
   const a = document.createElement("a");
@@ -46,6 +60,7 @@ document.getElementById("btn-save").addEventListener("click", () => {
   URL.revokeObjectURL(a.href);
   model.dirty = false;
   updateSummary();
+  updateTitle();
 });
 
 filePicker.addEventListener("change", async (ev) => {
@@ -64,6 +79,7 @@ filePicker.addEventListener("change", async (ev) => {
 examplePicker.addEventListener("change", async (ev) => {
   const path = ev.target.value;
   if (!path) return;
+  if (!confirmDiscard()) { ev.target.value = ""; return; }
   try {
     const res = await fetch(path);
     if (!res.ok) throw new Error(`fetch ${path}: ${res.status}`);
@@ -82,6 +98,7 @@ window.addEventListener("drop", async (e) => {
   e.preventDefault();
   const file = e.dataTransfer?.files?.[0];
   if (!file) return;
+  if (!confirmDiscard()) return;
   try {
     const text = await file.text();
     model.loadJson(text);
@@ -134,8 +151,23 @@ window.addEventListener("keydown", (ev) => {
   }
 });
 
-model.on("show-changed", updateSummary);
+model.on("show-changed", () => { updateSummary(); updateTitle(); });
 model.on("selection-changed", updateSummary);
+
+// Warn on close/refresh if there are unsaved changes.
+window.addEventListener("beforeunload", (ev) => {
+  if (model.dirty) {
+    ev.preventDefault();
+    ev.returnValue = "";
+  }
+});
+
+function updateTitle() {
+  const name = model.show?.name ?? null;
+  const dirty = model.dirty ? "*" : "";
+  const base = "Roban Swarm — Show Editor";
+  document.title = name ? `${dirty}${name} — ${base}` : base;
+}
 
 function updateSummary() {
   if (!model.show) {
