@@ -18,21 +18,24 @@
       <option value="examples/crossing_two.json">Crossing paths — two helis</option>
       <option value="examples/formation_three.json">Triangle rotation — three helis</option>
     </select>
+    <button class="btn" id="btn-fit">Fit view</button>
     <span class="spacer"></span>
+    <span id="status-summary" class="status-summary"></span>
     <button class="btn accent" id="btn-save">Save As…</button>
   </header>
 
   <main>
-    <div class="placeholder">
-      <h2>Parsed show</h2>
+    <section class="canvas-pane">
+      <canvas id="topdown"></canvas>
+      <div class="canvas-hint">Shift-drag to pan · wheel to zoom</div>
+    </section>
+
+    <aside class="side-pane">
+      <h2>Show</h2>
       <div id="issues" class="issues"><span class="ok">No show loaded.</span></div>
-      <h2>Model (JSON export preview)</h2>
+      <h2 class="muted">Model preview</h2>
       <pre class="json-dump" id="dump">—</pre>
-      <p class="hint">
-        v1 build in progress. This is chunk 1: model + validator + examples.
-        Canvas, timeline, and side panels land in later chunks.
-      </p>
-    </div>
+    </aside>
   </main>
 
   <script type="module" src="js/app.js"></script>

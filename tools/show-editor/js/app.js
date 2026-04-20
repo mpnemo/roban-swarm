@@ -1,22 +1,30 @@
-// Chunk 1 glue: wires the model + validator to a minimal DOM dump.
-// Canvas, timeline, and side panels land in later chunks.
+// Glue: wires DOM controls to the model + canvas. Validator panel,
+// timeline, altitude view, side panels land in later chunks.
 
 import { ShowModel } from "./model.js";
 import { validateTiming, validateSafety } from "./validate.js";
+import { TopdownCanvas } from "./canvas.js";
 
 const model = new ShowModel();
+const canvas = new TopdownCanvas(document.getElementById("topdown"), model);
 
 const dump = document.getElementById("dump");
 const issues = document.getElementById("issues");
+const summary = document.getElementById("status-summary");
 const examplePicker = document.getElementById("example-select");
 const filePicker = document.getElementById("file-picker");
 
 document.getElementById("btn-new").addEventListener("click", () => {
   model.newShow();
+  canvas.fitAll();
 });
 
 document.getElementById("btn-open").addEventListener("click", () => {
   filePicker.click();
+});
+
+document.getElementById("btn-fit").addEventListener("click", () => {
+  canvas.fitAll();
 });
 
 document.getElementById("btn-save").addEventListener("click", () => {
@@ -41,6 +49,7 @@ filePicker.addEventListener("change", async (ev) => {
   try {
     const text = await file.text();
     model.loadJson(text);
+    canvas.fitAll();
   } catch (e) {
     renderError(`Load failed: ${e.message}`);
   }
@@ -55,16 +64,15 @@ examplePicker.addEventListener("change", async (ev) => {
     if (!res.ok) throw new Error(`fetch ${path}: ${res.status}`);
     const text = await res.text();
     model.loadJson(text);
+    canvas.fitAll();
   } catch (e) {
     renderError(`Load failed: ${e.message}`);
   }
   examplePicker.value = "";
 });
 
-// Drag-drop onto window
-window.addEventListener("dragover", (e) => {
-  e.preventDefault();
-});
+// Drag-drop anywhere on the window
+window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", async (e) => {
   e.preventDefault();
   const file = e.dataTransfer?.files?.[0];
@@ -72,6 +80,7 @@ window.addEventListener("drop", async (e) => {
   try {
     const text = await file.text();
     model.loadJson(text);
+    canvas.fitAll();
   } catch (err) {
     renderError(`Load failed: ${err.message}`);
   }
@@ -84,10 +93,15 @@ function render() {
   if (!model.show) {
     issues.innerHTML = `<span class="ok">No show loaded.</span>`;
     dump.textContent = "—";
+    summary.textContent = "";
     return;
   }
   const timing = validateTiming(model.show);
   const safety = validateSafety(model.show);
+  const tracks = model.show.tracks.length;
+  const wps = totalWaypoints(model.show);
+  summary.textContent = `${tracks} heli · ${wps} wp · ${model.show.duration_s}s`;
+
   const parts = [];
   parts.push(
     `<span class="${timing.length ? "err" : "ok"}">Timing: ${
@@ -99,16 +113,12 @@ function render() {
       safety.length ? `${safety.length} warning(s) (3m min)` : "OK"
     }</span>`,
   );
-  parts.push(
-    `<span class="hint"> &middot; ${model.show.tracks.length} track(s), ` +
-      `${totalWaypoints(model.show)} waypoints, ${model.show.duration_s}s</span>`,
-  );
   const listItems = [
     ...timing.map((e) => `<li class="err">${escapeHtml(e.msg)}</li>`),
     ...safety.map((w) => `<li class="warn">${escapeHtml(w.msg)}</li>`),
   ];
   issues.innerHTML =
-    parts.join(" ") +
+    parts.join(" · ") +
     (listItems.length ? `<ul>${listItems.join("")}</ul>` : "");
 
   dump.textContent = model.toJson();
@@ -117,6 +127,7 @@ function render() {
 function renderError(msg) {
   issues.innerHTML = `<span class="err">${escapeHtml(msg)}</span>`;
   dump.textContent = "—";
+  summary.textContent = "";
 }
 
 function totalWaypoints(show) {
@@ -124,10 +135,12 @@ function totalWaypoints(show) {
 }
 
 function slugify(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "show";
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "show"
+  );
 }
 
 function escapeHtml(s) {
@@ -139,5 +152,6 @@ function escapeHtml(s) {
     .replaceAll("'", "&#39;");
 }
 
-// Expose for debugging in the console
+// Debug handle
 window.__model = model;
+window.__canvas = canvas;
