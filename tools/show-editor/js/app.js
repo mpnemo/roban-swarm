@@ -7,12 +7,33 @@ import { TopdownCanvas } from "./canvas.js";
 import { AltitudeView } from "./altitude.js";
 import { SidePanel } from "./sidepanel.js";
 import { Timeline } from "./timeline.js";
+import { ThreeView } from "./view3d.js";
 
 const model = new ShowModel();
 const canvas = new TopdownCanvas(document.getElementById("topdown"), model);
 const altitude = new AltitudeView(document.getElementById("altitude"), model);
 const sidePanel = new SidePanel(document.getElementById("side-pane"), model);
 const timeline = new Timeline(document.getElementById("timeline-bar"), model);
+const view3d = new ThreeView(document.getElementById("view3d"), model);
+
+// View tab switching (top-down ↔ 3D). Altitude view stays put below.
+let activeView = "topdown";
+const viewTabs = document.querySelectorAll(".view-tab");
+const viewPanels = document.querySelectorAll(".view-panel");
+for (const tab of viewTabs) {
+  tab.addEventListener("click", () => {
+    activeView = tab.dataset.view;
+    for (const t of viewTabs) t.classList.toggle("active", t === tab);
+    for (const p of viewPanels) {
+      p.hidden = p.dataset.view !== activeView;
+    }
+    view3d.setVisible(activeView === "3d");
+    if (activeView === "3d") {
+      // Re-fit on first reveal so the camera frames the data, not empty space.
+      requestAnimationFrame(() => view3d.fitAll());
+    }
+  });
+}
 
 const summary = document.getElementById("status-summary");
 const examplePicker = document.getElementById("example-select");
@@ -21,8 +42,13 @@ const filePicker = document.getElementById("file-picker");
 document.getElementById("btn-new").addEventListener("click", () => {
   if (!confirmDiscard()) return;
   model.newShow();
-  canvas.fitAll();
+  fitAllViews();
 });
+
+function fitAllViews() {
+  canvas.fitAll();
+  view3d.fitAll();
+}
 
 document.getElementById("btn-open").addEventListener("click", () => {
   if (!confirmDiscard()) return;
@@ -34,7 +60,8 @@ function confirmDiscard() {
 }
 
 document.getElementById("btn-fit").addEventListener("click", () => {
-  canvas.fitAll();
+  if (activeView === "3d") view3d.fitAll();
+  else canvas.fitAll();
 });
 
 // Smooth-preview toggle: Catmull-Rom overlay on top-down + altitude.
@@ -44,10 +71,12 @@ const savedSmooth = localStorage.getItem("roban.editor.smooth") === "1";
 smoothToggle.checked = savedSmooth;
 canvas.setShowSmooth(savedSmooth);
 altitude.setShowSmooth(savedSmooth);
+view3d.setShowSmooth(savedSmooth);
 smoothToggle.addEventListener("change", () => {
   const on = smoothToggle.checked;
   canvas.setShowSmooth(on);
   altitude.setShowSmooth(on);
+  view3d.setShowSmooth(on);
   localStorage.setItem("roban.editor.smooth", on ? "1" : "0");
 });
 
@@ -83,7 +112,7 @@ filePicker.addEventListener("change", async (ev) => {
   try {
     const text = await file.text();
     model.loadJson(text);
-    canvas.fitAll();
+    fitAllViews();
   } catch (e) {
     alert(`Load failed: ${e.message}`);
   }
@@ -99,7 +128,7 @@ examplePicker.addEventListener("change", async (ev) => {
     if (!res.ok) throw new Error(`fetch ${path}: ${res.status}`);
     const text = await res.text();
     model.loadJson(text);
-    canvas.fitAll();
+    fitAllViews();
   } catch (e) {
     alert(`Load failed: ${e.message}`);
   }
@@ -116,7 +145,7 @@ window.addEventListener("drop", async (e) => {
   try {
     const text = await file.text();
     model.loadJson(text);
-    canvas.fitAll();
+    fitAllViews();
   } catch (err) {
     alert(`Load failed: ${err.message}`);
   }
@@ -219,3 +248,4 @@ window.__canvas = canvas;
 window.__timeline = timeline;
 window.__sidePanel = sidePanel;
 window.__altitude = altitude;
+window.__view3d = view3d;

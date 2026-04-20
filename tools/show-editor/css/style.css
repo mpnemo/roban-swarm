@@ -110,19 +110,53 @@ main {
   flex-direction: column;
 }
 
-.topdown-wrap {
+.view-tabs {
+  display: flex;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.view-tab {
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  border-bottom: 2px solid transparent;
+}
+.view-tab:hover { color: var(--fg); }
+.view-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  background: var(--bg);
+}
+
+.view-panel {
   flex: 1;
   position: relative;
   min-height: 0;
   display: flex;
 }
-.topdown-wrap canvas {
+.view-panel[hidden] { display: none; }
+.view-panel canvas {
   flex: 1;
   display: block;
   width: 100%;
   height: 100%;
-  cursor: crosshair;
   touch-action: none;
+}
+.topdown-wrap canvas { cursor: crosshair; }
+.view3d-wrap canvas { cursor: grab; }
+.view3d-wrap canvas:active { cursor: grabbing; }
+
+.topdown-wrap {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
 }
 
 canvas.altitude-canvas {

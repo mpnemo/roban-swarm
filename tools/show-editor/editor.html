@@ -5,6 +5,14 @@
   <title>Roban Swarm — Show Editor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.js",
+        "three/addons/": "./vendor/three-addons/"
+      }
+    }
+  </script>
 </head>
 <body>
   <header>
@@ -31,9 +39,17 @@
 
   <main>
     <section class="canvas-pane">
-      <div class="topdown-wrap">
+      <div class="view-tabs">
+        <button class="view-tab active" data-view="topdown">Top-down</button>
+        <button class="view-tab" data-view="3d">3D</button>
+      </div>
+      <div class="topdown-wrap view-panel" data-view="topdown">
         <canvas id="topdown"></canvas>
         <div class="canvas-hint">Click to add waypoint · drag to move · shift-drag to pan · wheel to zoom</div>
+      </div>
+      <div class="view3d-wrap view-panel" data-view="3d" hidden>
+        <canvas id="view3d"></canvas>
+        <div class="canvas-hint">Left-drag to orbit · right-drag to pan · wheel to zoom</div>
       </div>
       <canvas id="altitude" class="altitude-canvas"></canvas>
     </section>

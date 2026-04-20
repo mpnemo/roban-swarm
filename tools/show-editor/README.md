@@ -19,6 +19,19 @@ Then open `http://localhost:8000/editor.html` in a browser.
 
 (Or any static server — the editor does not need a backend.)
 
+## Views
+
+Top-of-canvas tabs switch between **Top-down** (2D N/E grid, click-to-add
++ drag) and **3D** (orbit camera, vendored Three.js). The **altitude**
+view stays pinned below in both modes.
+
+The **Smooth preview** toggle in the header overlays a dashed Catmull-Rom
+spline through each track's waypoints — on top-down, altitude, and 3D
+all at once. It's a planning aid only: the flight daemon streams **linear**
+interpolated targets between waypoints, so the solid colored polylines
+are what helis actually fly. The dashed curve helps you see the intended
+shape and judge whether you've placed enough waypoints to approximate it.
+
 ## Editing basics
 
 - **Load an example** from the dropdown in the header, or **Open** a JSON
@@ -134,20 +147,28 @@ tools/show-editor/
     validate.js               timing + safety checks
     canvas.js                 top-down N/E view
     altitude.js               altitude-over-time view
+    view3d.js                 3D view (uses vendored Three.js)
     timeline.js               scrubber + playback
     sidepanel.js              show / heli / waypoint edit tree
+    smoothing.js              Catmull-Rom helper for smooth-preview overlay
     colors.js                 heli palette + speed gradient
     app.js                    DOM wiring, keyboard shortcuts
   examples/
     figure8_single.json       one heli, figure-8 (uses hold_s)
     crossing_two.json         two helis crossing at staggered alts
     formation_three.json      three helis rotating a triangle
-  vendor/                     (reserved for v2: Three.js etc.)
+    helix_eight.json          eight helis, counter-rotating helix
+  vendor/
+    three.module.js           Three.js r160 (MIT) — vendored, no network
+    three-addons/             OrbitControls etc. for the 3D view
 ```
 
 ## What's not in v1
 
-See the "v2 candidates" section of [DESIGN.md](DESIGN.md) — notable ones
-include a terrain / map overlay, a 3D perspective view, jerk-limited
-trajectory preview, and an operator-registration stub for future KYC
-requirements.
+See the "v2 candidates" section of [DESIGN.md](DESIGN.md) — notable
+remaining items include a terrain / map overlay, a jerk-limited
+trajectory preview that matches what helis actually fly, collision heat
+maps, and an operator-registration stub for future KYC requirements.
+
+The 3D view and smooth-preview overlay listed in DESIGN.md as v2
+candidates have been **pulled forward** into this v1 build.
