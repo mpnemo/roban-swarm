@@ -248,6 +248,69 @@ main {
 }
 .action-row input[type="number"] { width: 54px; }
 
+footer.timeline-bar {
+  height: 48px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 10px;
+}
+
+.time-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  min-width: 130px;
+  text-align: right;
+}
+
+.scrubber {
+  flex: 1;
+  position: relative;
+  height: 22px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  touch-action: none;
+  overflow: hidden;
+}
+.scrubber-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: var(--accent);
+  opacity: 0.18;
+  pointer-events: none;
+  width: 0%;
+}
+.scrubber-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.scrubber-tick {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 1px;
+  opacity: 0.55;
+}
+.scrubber-thumb {
+  position: absolute;
+  top: -2px; bottom: -2px;
+  width: 3px;
+  background: var(--accent);
+  transform: translateX(-1px);
+  pointer-events: none;
+  box-shadow: 0 0 4px var(--accent);
+  border-radius: 1px;
+}
+
+#tl-play { min-width: 56px; }
+#tl-speed { width: 72px; }
+
 .status-summary {
   font-family: var(--font-mono);
   font-size: 11px;
