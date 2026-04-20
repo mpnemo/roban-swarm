@@ -3,6 +3,7 @@
 // No click-to-add / drag interactions yet — those land in chunk 3.
 
 import { heliColor, speedColor } from "./colors.js";
+import { catmullRom } from "./smoothing.js";
 
 const MIN_SCALE = 2;       // px/m — zoomed all the way out
 const MAX_SCALE = 400;     // px/m — zoomed all the way in
@@ -25,11 +26,17 @@ export class TopdownCanvas {
     this.ctx = canvasEl.getContext("2d");
     this.model = model;
     this.view = { centerN: 0, centerE: 0, scale: 20 };
+    this.showSmooth = false; // dashed Catmull-Rom overlay, planning aid only
     this._dpr = window.devicePixelRatio || 1;
     this._raf = null;
-    this._pan = null; // { startClientX, startClientY, startCenterN, startCenterE }
+    this._pan = null;
     this._bindEvents();
     this._resize();
+    this._scheduleRender();
+  }
+
+  setShowSmooth(on) {
+    this.showSmooth = !!on;
     this._scheduleRender();
   }
 
@@ -271,10 +278,34 @@ export class TopdownCanvas {
 
     const show = this.model.show;
     if (show) {
+      if (this.showSmooth) {
+        for (const track of show.tracks) this._drawSmoothOverlay(track);
+      }
       for (const track of show.tracks) this._drawTrackPolyline(track);
       for (const track of show.tracks) this._drawWaypoints(track);
       for (const track of show.tracks) this._drawLiveMarker(track);
     }
+  }
+
+  _drawSmoothOverlay(track) {
+    const wps = track.waypoints;
+    if (wps.length < 2) return;
+    const pts = wps.map((w) => w.pos);
+    const smooth = catmullRom(pts, 18);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = heliColor(track.heli_id) + "aa";
+    ctx.beginPath();
+    const first = this.neToScreen(smooth[0].n, smooth[0].e);
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < smooth.length; i++) {
+      const { x, y } = this.neToScreen(smooth[i].n, smooth[i].e);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   _drawGrid(w, h) {

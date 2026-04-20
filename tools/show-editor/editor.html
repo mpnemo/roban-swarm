@@ -20,6 +20,10 @@
       <option value="examples/helix_eight.json">Counter-rotating helix — eight helis</option>
     </select>
     <button class="btn" id="btn-fit">Fit view</button>
+    <label class="toggle-label" title="Dashed Catmull-Rom overlay showing the intended shape. The flight daemon actually streams linear segments between waypoints — the solid line is what helis fly.">
+      <input type="checkbox" id="toggle-smooth" />
+      Smooth preview
+    </label>
     <span class="spacer"></span>
     <span id="status-summary" class="status-summary"></span>
     <button class="btn accent" id="btn-save">Save As…</button>

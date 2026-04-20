@@ -9,6 +9,7 @@
 // clamped >= 0 (no burying the heli).
 
 import { heliColor, speedColor } from "./colors.js";
+import { catmullRom } from "./smoothing.js";
 
 const BG = "#1a1a2e";
 const GRID_MINOR = "#252538";
@@ -28,12 +29,18 @@ export class AltitudeView {
     this.ctx = canvasEl.getContext("2d");
     this.model = model;
     this.viewMaxAlt = 10;
+    this.showSmooth = false;
     this._dpr = window.devicePixelRatio || 1;
     this._raf = null;
     this._drag = null;
     this._clickAdd = null;
     this._bindEvents();
     this._resize();
+    this._scheduleRender();
+  }
+
+  setShowSmooth(on) {
+    this.showSmooth = !!on;
     this._scheduleRender();
   }
 
@@ -132,8 +139,35 @@ export class AltitudeView {
     this.viewMaxAlt = Math.max(5, Math.ceil(maxAlt * 1.2));
 
     this._drawGrid();
+    if (this.showSmooth) {
+      for (const track of show.tracks) this._drawSmoothOverlay(track);
+    }
     for (const track of show.tracks) this._drawTrack(track);
     this._drawTimeCursor();
+  }
+
+  _drawSmoothOverlay(track) {
+    const wps = track.waypoints;
+    if (wps.length < 2) return;
+    // For altitude, we sample (t, alt) as a 2D Catmull-Rom directly —
+    // using position NED as the source would mis-shape the t axis. So
+    // treat (t, -d) as the smoothing inputs by stuffing into a Vec3.
+    const pts = wps.map((w) => ({ n: w.t, e: -w.pos.d, d: 0 }));
+    const smooth = catmullRom(pts, 18);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = heliColor(track.heli_id) + "aa";
+    ctx.beginPath();
+    const first = smooth[0];
+    ctx.moveTo(this.tToX(first.n), this.altToY(first.e));
+    for (let i = 1; i < smooth.length; i++) {
+      const p = smooth[i];
+      ctx.lineTo(this.tToX(p.n), this.altToY(p.e));
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   _drawGrid() {

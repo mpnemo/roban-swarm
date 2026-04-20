@@ -37,6 +37,20 @@ document.getElementById("btn-fit").addEventListener("click", () => {
   canvas.fitAll();
 });
 
+// Smooth-preview toggle: Catmull-Rom overlay on top-down + altitude.
+// Purely visual; flight daemon still streams linear-interpolated targets.
+const smoothToggle = document.getElementById("toggle-smooth");
+const savedSmooth = localStorage.getItem("roban.editor.smooth") === "1";
+smoothToggle.checked = savedSmooth;
+canvas.setShowSmooth(savedSmooth);
+altitude.setShowSmooth(savedSmooth);
+smoothToggle.addEventListener("change", () => {
+  const on = smoothToggle.checked;
+  canvas.setShowSmooth(on);
+  altitude.setShowSmooth(on);
+  localStorage.setItem("roban.editor.smooth", on ? "1" : "0");
+});
+
 document.getElementById("btn-save").addEventListener("click", () => {
   if (!model.show) {
     alert("Nothing to save — create or load a show first.");

@@ -55,6 +55,20 @@ header h1 {
 
 header .spacer { flex: 1; }
 
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-label input[type="checkbox"] {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
 .btn {
   background: var(--bg-elev);
   color: var(--fg);
