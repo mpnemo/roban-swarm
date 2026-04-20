@@ -106,6 +106,10 @@ export class TopdownCanvas {
       this._scheduleRender();
     });
 
+    this.model.on("show-changed", () => this._scheduleRender());
+    this.model.on("selection-changed", () => this._scheduleRender());
+    this.model.on("time-changed", () => this._scheduleRender());
+
     // Wheel zoom, anchored at the mouse cursor.
     this.el.addEventListener("wheel", (ev) => {
       ev.preventDefault();
@@ -121,13 +125,20 @@ export class TopdownCanvas {
       this._scheduleRender();
     }, { passive: false });
 
-    // Pan: middle-button drag OR shift + left drag OR right-button drag.
-    this.el.addEventListener("pointerdown", (ev) => {
-      const isPan =
-        ev.button === 1 ||
-        ev.button === 2 ||
-        (ev.button === 0 && ev.shiftKey);
-      if (!isPan) return;
+    this.el.addEventListener("pointerdown", (ev) => this._onPointerDown(ev));
+    this.el.addEventListener("pointermove", (ev) => this._onPointerMove(ev));
+    this.el.addEventListener("pointerup", (ev) => this._onPointerUp(ev));
+    this.el.addEventListener("pointercancel", (ev) => this._onPointerUp(ev));
+    this.el.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  }
+
+  _onPointerDown(ev) {
+    // Pan: middle-button OR right-button OR shift+left.
+    const isPan =
+      ev.button === 1 ||
+      ev.button === 2 ||
+      (ev.button === 0 && ev.shiftKey);
+    if (isPan) {
       ev.preventDefault();
       this.el.setPointerCapture(ev.pointerId);
       this._pan = {
@@ -136,23 +147,107 @@ export class TopdownCanvas {
         startCenterN: this.view.centerN,
         startCenterE: this.view.centerE,
       };
-    });
-    this.el.addEventListener("pointermove", (ev) => {
-      if (!this._pan) return;
+      return;
+    }
+    if (ev.button !== 0) return;
+
+    const rect = this.el.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const hit = this._hitTest(px, py);
+    ev.preventDefault();
+    this.el.setPointerCapture(ev.pointerId);
+
+    if (hit) {
+      this.model.select(hit.heliId, hit.wpIdx);
+      this._drag = {
+        heliId: hit.heliId,
+        wpIdx: hit.wpIdx,
+        startNE: this.screenToNE(px, py),
+        startN: hit.wp.pos.n,
+        startE: hit.wp.pos.e,
+        moved: false,
+      };
+    } else {
+      this._clickAdd = { startPx: px, startPy: py };
+    }
+  }
+
+  _onPointerMove(ev) {
+    if (this._pan) {
       const dx = ev.clientX - this._pan.startX;
       const dy = ev.clientY - this._pan.startY;
       this.view.centerE = this._pan.startCenterE - dx / this.view.scale;
       this.view.centerN = this._pan.startCenterN + dy / this.view.scale;
       this._scheduleRender();
+      return;
+    }
+    if (this._drag) {
+      const rect = this.el.getBoundingClientRect();
+      const ne = this.screenToNE(ev.clientX - rect.left, ev.clientY - rect.top);
+      this._drag.moved = true;
+      this.model.updateWaypoint(this._drag.heliId, this._drag.wpIdx, {
+        pos: {
+          n: this._drag.startN + (ne.n - this._drag.startNE.n),
+          e: this._drag.startE + (ne.e - this._drag.startNE.e),
+        },
+      });
+      return;
+    }
+    if (this._clickAdd) {
+      // Upgrade to an idle cursor move — nothing to do.
+    }
+  }
+
+  _onPointerUp(ev) {
+    try { this.el.releasePointerCapture?.(ev.pointerId); } catch {}
+    if (this._pan) { this._pan = null; return; }
+    if (this._drag) { this._drag = null; return; }
+    if (this._clickAdd) {
+      const rect = this.el.getBoundingClientRect();
+      const px = ev.clientX - rect.left;
+      const py = ev.clientY - rect.top;
+      const moved =
+        Math.hypot(px - this._clickAdd.startPx, py - this._clickAdd.startPy) > 3;
+      this._clickAdd = null;
+      if (!moved) this._handleClickAdd(px, py);
+    }
+  }
+
+  _hitTest(px, py) {
+    const s = this.model.show;
+    if (!s) return null;
+    const HIT_RADIUS = 10;
+    // Render order: tracks then waypoints. Hit in reverse so topmost wins.
+    for (let ti = s.tracks.length - 1; ti >= 0; ti--) {
+      const track = s.tracks[ti];
+      for (let wi = track.waypoints.length - 1; wi >= 0; wi--) {
+        const wp = track.waypoints[wi];
+        const scr = this.neToScreen(wp.pos.n, wp.pos.e);
+        if (Math.hypot(scr.x - px, scr.y - py) < HIT_RADIUS) {
+          return { heliId: track.heli_id, wpIdx: wi, wp };
+        }
+      }
+    }
+    return null;
+  }
+
+  _handleClickAdd(px, py) {
+    const s = this.model.show;
+    if (!s) return;
+    const selId = this.model.selection.heliId;
+    const track = selId != null ? this.model.getTrack(selId) : null;
+    if (!track) return;
+    const ne = this.screenToNE(px, py);
+    // Keep altitude unchanged from interpolated value at current time, so
+    // a top-down click never accidentally moves a heli up or down.
+    const t = this.model.time;
+    const interp = this.model.interpolate(track, t);
+    const d = interp ? interp.d : -5;
+    this.model.addWaypoint(track.heli_id, {
+      t,
+      pos: { n: ne.n, e: ne.e, d },
     });
-    const endPan = (ev) => {
-      if (!this._pan) return;
-      this.el.releasePointerCapture?.(ev.pointerId);
-      this._pan = null;
-    };
-    this.el.addEventListener("pointerup", endPan);
-    this.el.addEventListener("pointercancel", endPan);
-    this.el.addEventListener("contextmenu", (ev) => ev.preventDefault());
   }
 
   _scheduleRender() {
