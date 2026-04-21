@@ -32,8 +32,16 @@ export class Lifecycle {
   // ---------- overrides & lookups ----------
 
   _ops() {
-    // Task 4 will read show.ops; for now, pure defaults.
-    return DAEMON_DEFAULTS;
+    const o = this.model.show?.ops ?? {};
+    return {
+      HOVER_ALT_M: o.hover_alt_m ?? DAEMON_DEFAULTS.HOVER_ALT_M,
+      SPOOL_TIME_S: o.spool_time_s ?? DAEMON_DEFAULTS.SPOOL_TIME_S,
+      RETURN_BASE_ALT_M: o.return_base_alt_m ?? DAEMON_DEFAULTS.RETURN_BASE_ALT_M,
+      RETURN_ALT_STEP_M: o.return_alt_step_m ?? DAEMON_DEFAULTS.RETURN_ALT_STEP_M,
+      LANDING_DESCENT_RATE: o.landing_descent_rate ?? DAEMON_DEFAULTS.LANDING_DESCENT_RATE,
+      STAGING_SPEED_M_S: DAEMON_DEFAULTS.STAGING_SPEED_M_S,
+      VERTICAL_SPEED_M_S: DAEMON_DEFAULTS.VERTICAL_SPEED_M_S,
+    };
   }
 
   _sequencing() {

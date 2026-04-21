@@ -4,7 +4,7 @@
 
 import { heliColor } from "./colors.js";
 import { validateTiming, validateSafety, validateLifecycleSafety } from "./validate.js";
-import { Lifecycle } from "./lifecycle.js";
+import { Lifecycle, DAEMON_DEFAULTS } from "./lifecycle.js";
 
 export class SidePanel {
   constructor(root, model) {
@@ -52,6 +52,7 @@ export class SidePanel {
       this._validationSection(timingErr, safetyWarn, lifecycleWarn),
       this._showSection(s),
       this._sequencingSection(s),
+      this._opsSection(s),
       this._lineupSection(s),
       this._heliListSection(s, selTrack),
       selTrack ? this._trackDetailSection(selTrack, sel.waypointIdx) : "",
@@ -136,6 +137,40 @@ export class SidePanel {
           <input type="number" step="0.1" min="0" data-bind="seq.landing_stagger_s" value="${seq.landing_stagger_s}" />
         </div>
         <p class="hint">Per-heli delays during arm/spool, takeoff, and descent. Default 0 = all parallel.</p>
+      </section>
+    `;
+  }
+
+  _opsSection(s) {
+    const ops = s.ops || {};
+    const has = !!s.ops && Object.keys(ops).length > 0;
+    const fields = [
+      ["hover_alt_m", "hover alt (m)", DAEMON_DEFAULTS.HOVER_ALT_M],
+      ["spool_time_s", "spool time (s)", DAEMON_DEFAULTS.SPOOL_TIME_S],
+      ["return_base_alt_m", "return base alt (m)", DAEMON_DEFAULTS.RETURN_BASE_ALT_M],
+      ["return_alt_step_m", "return alt step (m)", DAEMON_DEFAULTS.RETURN_ALT_STEP_M],
+      ["landing_descent_rate", "descent rate (m/s)", DAEMON_DEFAULTS.LANDING_DESCENT_RATE],
+    ];
+    const rows = fields.map(([key, label, dflt]) => {
+      const v = ops[key];
+      const isSet = typeof v === "number";
+      return `
+        <div class="field-row ops-row">
+          <label>${label}</label>
+          <input type="number" step="0.1"
+                 data-bind="ops.${key}"
+                 value="${isSet ? v : ""}"
+                 placeholder="${dflt}"
+                 title="Leave blank to use daemon default (${dflt})" />
+        </div>
+      `;
+    }).join("");
+    return `
+      <section class="pane-section">
+        <h2>Ops overrides ${has ? `<span class="ok-badge">custom</span>` : `<span class="hint" style="text-transform:none">defaults</span>`}</h2>
+        ${rows}
+        <p class="hint">Override daemon operational constants for this show. Blank = daemon default (shown as placeholder).</p>
+        ${has ? `<div class="action-row"><button class="btn-mini" id="ops-clear">Clear all overrides</button></div>` : ""}
       </section>
     `;
   }
@@ -405,6 +440,11 @@ export class SidePanel {
       this.model.setShowOffset(null);
     });
 
+    // ops overrides clear-all
+    this.root.querySelector("#ops-clear")?.addEventListener("click", () => {
+      this.model.clearOpsOverrides();
+    });
+
     // lineup: per-row set/clear
     for (const btn of this.root.querySelectorAll("[data-set-lineup]")) {
       btn.addEventListener("click", () => {
@@ -513,6 +553,13 @@ export class SidePanel {
         const v = num(inp);
         if (v < 0) throw new Error("stagger must be >= 0");
         this.model.setSequencing({ [field]: v });
+      } else if (bind.startsWith("ops.")) {
+        const field = bind.slice("ops.".length);
+        if (inp.value.trim() === "") {
+          this.model.setOpsOverride(field, null);
+        } else {
+          this.model.setOpsOverride(field, num(inp));
+        }
       } else if (bind === "lineup.tolerance_m") {
         const v = num(inp);
         if (v < 0) throw new Error("tolerance_m must be >= 0");

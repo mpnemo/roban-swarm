@@ -50,6 +50,7 @@ export class ShowModel extends EventBus {
       home_alt_m: 0,
       show_offset: null,
       sequencing: null,
+      ops: null,
       lineup: null,
       duration_s,
       tracks: [
@@ -138,6 +139,14 @@ export class ShowModel extends EventBus {
         };
       }
     }
+    // Emit optional ops overrides (only fields the user actually set).
+    if (s.ops && Object.keys(s.ops).length > 0) {
+      const opsOut = {};
+      for (const [k, v] of Object.entries(s.ops)) {
+        if (typeof v === "number") opsOut[k] = round(v, 3);
+      }
+      if (Object.keys(opsOut).length > 0) out.ops = opsOut;
+    }
     // Emit optional lineup when present.
     if (s.lineup && s.lineup.positions) {
       const entries = Object.entries(s.lineup.positions)
@@ -152,6 +161,31 @@ export class ShowModel extends EventBus {
       }
     }
     return JSON.stringify(out, null, 2);
+  }
+
+  /**
+   * Patch one ops override. Pass value = null to clear that field (fall
+   * back to daemon default). Pass a number to override it.
+   */
+  setOpsOverride(key, value) {
+    if (!this.show) return;
+    const current = this.show.ops ? { ...this.show.ops } : {};
+    if (value === null || value === undefined || Number.isNaN(value)) {
+      delete current[key];
+    } else {
+      current[key] = value;
+    }
+    this.show.ops = Object.keys(current).length > 0 ? current : null;
+    this.dirty = true;
+    this.emit("show-changed");
+  }
+
+  /** Clear all ops overrides (fall back to daemon defaults). */
+  clearOpsOverrides() {
+    if (!this.show) return;
+    this.show.ops = null;
+    this.dirty = true;
+    this.emit("show-changed");
   }
 
   /** Merge the sequencing block (patch). Pass null to clear. */
@@ -526,10 +560,25 @@ function parseAndExpand(raw) {
     home_alt_m: typeof raw.home_alt_m === "number" ? raw.home_alt_m : 0,
     show_offset: null,
     sequencing: null,
+    ops: null,
     lineup: null,
     duration_s: raw.duration_s,
     tracks: [],
   };
+
+  // Optional ops overrides (per-show overrides of daemon constants).
+  if (raw.ops && typeof raw.ops === "object") {
+    const allowed = [
+      "hover_alt_m", "spool_time_s",
+      "return_base_alt_m", "return_alt_step_m",
+      "landing_descent_rate",
+    ];
+    const ops = {};
+    for (const k of allowed) {
+      if (typeof raw.ops[k] === "number") ops[k] = raw.ops[k];
+    }
+    if (Object.keys(ops).length > 0) show.ops = ops;
+  }
 
   // Optional sequencing staggers
   if (raw.sequencing && typeof raw.sequencing === "object") {

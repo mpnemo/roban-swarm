@@ -123,6 +123,18 @@ class FlightDaemon:
         """Map heli_id to MAVLink sysid, respecting sim mode offset."""
         return 10 + heli_id + get_sysid_offset()
 
+    def _op(self, name: str, default: float) -> float:
+        """Read a daemon operational constant with optional per-show override.
+
+        Any field on ShowFile.ops shadows the module-level default.
+        """
+        ops = self._show.ops if self._show else None
+        if ops is not None:
+            v = getattr(ops, name, None)
+            if v is not None:
+                return v
+        return default
+
     @property
     def state(self) -> DaemonState:
         return self._state
@@ -474,8 +486,9 @@ class FlightDaemon:
             for heli_id in heli_ids:
                 self._heli_phases[heli_id] = HeliPhase.SPOOLING
             await self._emit_phase_progress()
-            log.info("Spooling up (%.0fs)...", SPOOL_TIME_S)
-            await asyncio.sleep(SPOOL_TIME_S)
+            spool_time = self._op("spool_time_s", SPOOL_TIME_S)
+            log.info("Spooling up (%.0fs)...", spool_time)
+            await asyncio.sleep(spool_time)
 
             # --- Phase 3: TAKEOFF (parallel) ---
             self._state = DaemonState.TAKING_OFF
@@ -514,11 +527,12 @@ class FlightDaemon:
         await self._emit_phase_progress()
         seq = self._show.sequencing
         takeoff_stagger = (seq.takeoff_stagger_s if seq else 0.0)
+        hover_alt = self._op("hover_alt_m", HOVER_ALT_M)
         if takeoff_stagger > 0:
             log.info("Takeoff: staggered by %.1fs between helis (%.1fm hover)",
-                     takeoff_stagger, HOVER_ALT_M)
+                     takeoff_stagger, hover_alt)
         else:
-            log.info("All helis taking off to %.1fm (parallel)", HOVER_ALT_M)
+            log.info("All helis taking off to %.1fm (parallel)", hover_alt)
 
         phase_start = time.monotonic()
         at_altitude = set()
@@ -535,11 +549,11 @@ class FlightDaemon:
                 if now < heli_start:
                     await self._send_safe(heli_id, home.n, home.e, 0.0)
                     continue
-                await self._send_safe(heli_id, home.n, home.e, -(HOVER_ALT_M))
+                await self._send_safe(heli_id, home.n, home.e, -hover_alt)
 
                 if heli_id not in at_altitude:
                     v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
-                    if v and v.get("relative_alt_m", 0) >= (HOVER_ALT_M - 1.0):
+                    if v and v.get("relative_alt_m", 0) >= (hover_alt - 1.0):
                         at_altitude.add(heli_id)
                         log.info("Heli%02d at hover altitude", heli_id)
 
@@ -568,14 +582,16 @@ class FlightDaemon:
         await self._emit_event({"type": "show_event", "event": "staging_traverse"})
 
         # Phase 1: Fly horizontally at hover altitude to target N/E
-        log.info("Staging phase 1: horizontal traverse at hover altitude")
+        hover_alt = self._op("hover_alt_m", HOVER_ALT_M)
+        log.info("Staging phase 1: horizontal traverse at hover altitude (%.1fm)",
+                 hover_alt)
         arrived_horiz = set()
         deadline = time.monotonic() + 30
         while self._state == DaemonState.STAGING:
             for heli_id in heli_ids:
                 t = targets[heli_id]
                 # Keep at hover altitude, fly to target N/E
-                await self._send_safe(heli_id, t.n, t.e, -(HOVER_ALT_M))
+                await self._send_safe(heli_id, t.n, t.e, -hover_alt)
 
                 if heli_id not in arrived_horiz:
                     v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
@@ -737,9 +753,11 @@ class FlightDaemon:
                 self._heli_phases[heli_id] = HeliPhase.RETURNING
             await self._emit_phase_progress()
 
+            return_base = self._op("return_base_alt_m", RETURN_BASE_ALT_M)
+            return_step = self._op("return_alt_step_m", RETURN_ALT_STEP_M)
             return_alts = {}
             for idx, heli_id in enumerate(heli_ids):
-                return_alts[heli_id] = -(RETURN_BASE_ALT_M + idx * RETURN_ALT_STEP_M)
+                return_alts[heli_id] = -(return_base + idx * return_step)
 
             # Fly all simultaneously — wait for all to arrive (or 10s max)
             arrived = set()
@@ -781,6 +799,7 @@ class FlightDaemon:
             await self._emit_phase_progress()
 
             # Track per-heli descent state
+            descent_rate = self._op("landing_descent_rate", LANDING_DESCENT_RATE)
             descent_d = {hid: return_alts[hid] for hid in heli_ids}
             landed_since = {hid: None for hid in heli_ids}
             landed_set = set()
@@ -803,7 +822,7 @@ class FlightDaemon:
                         continue
 
                     # Lower target altitude
-                    descent_d[heli_id] += LANDING_DESCENT_RATE * TICK_INTERVAL
+                    descent_d[heli_id] += descent_rate * TICK_INTERVAL
                     if descent_d[heli_id] > 0:
                         descent_d[heli_id] = 0
 

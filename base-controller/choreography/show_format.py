@@ -107,6 +107,35 @@ class HeliTrack(BaseModel):
     )
 
 
+class OpsOverrides(BaseModel):
+    """Per-show overrides for daemon operational constants.
+
+    Any field omitted falls back to the daemon's built-in default —
+    see flight_daemon.py for current values. These fields affect how
+    the daemon runs the show; they are *not* artistic parameters.
+    """
+    hover_alt_m: Optional[float] = Field(
+        default=None, gt=0,
+        description="Takeoff + staging cruise altitude. Default 5.0m.",
+    )
+    spool_time_s: Optional[float] = Field(
+        default=None, ge=0,
+        description="Rotor spool-up after arm. Default 8.0s.",
+    )
+    return_base_alt_m: Optional[float] = Field(
+        default=None, gt=0,
+        description="First heli's return altitude. Default 8.0m.",
+    )
+    return_alt_step_m: Optional[float] = Field(
+        default=None, ge=0,
+        description="Per-heli return altitude stagger. Default 3.0m.",
+    )
+    landing_descent_rate: Optional[float] = Field(
+        default=None, gt=0,
+        description="Controlled descent rate. Default 1.0 m/s.",
+    )
+
+
 class Sequencing(BaseModel):
     """Per-show staggering of startup / takeoff / landing.
 
@@ -172,6 +201,12 @@ class ShowFile(BaseModel):
         default=None,
         description="Staggered startup / takeoff / landing. Default 0 = "
                     "parallel (current behavior).",
+    )
+    ops: Optional[OpsOverrides] = Field(
+        default=None,
+        description="Per-show overrides for daemon operational constants "
+                    "(hover altitude, spool time, return altitude stagger, "
+                    "descent rate). Any field omitted uses daemon defaults.",
     )
     lineup: Optional[LineupSpec] = Field(
         default=None,
