@@ -378,7 +378,7 @@ export class SidePanel {
             <input type="checkbox" data-bind="wp.vel.enabled" ${hasVel ? "checked" : ""} />
             velocity hint
           </label>
-        </div>`
+        </div>
         ${hasVel ? `
           <div class="field-row">
             <label>vN (m/s)</label>
