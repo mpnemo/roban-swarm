@@ -76,6 +76,32 @@ REQUIRED_FAILSAFE_PARAMS = {
 M_PER_DEG_LAT = 111319.5
 
 
+def _yaw_rad(wp):
+    """Waypoint yaw in radians, or None if the wp doesn't specify one."""
+    if getattr(wp, "yaw_mode", "auto") != "absolute":
+        return None
+    y = getattr(wp, "yaw_deg", None)
+    if y is None:
+        return None
+    return math.radians(y)
+
+
+def _interp_yaw(a, b, frac):
+    """Short-path linear yaw interpolation between two waypoints. Returns
+    None if neither waypoint specifies an absolute yaw. When only one of
+    the two specifies yaw, that value is held through the segment."""
+    ya, yb = _yaw_rad(a), _yaw_rad(b)
+    if ya is None and yb is None:
+        return None
+    if ya is None:
+        return yb
+    if yb is None:
+        return ya
+    # Short-path angular lerp
+    dy = (yb - ya + math.pi) % (2 * math.pi) - math.pi
+    return ya + dy * frac
+
+
 class DaemonState(str, Enum):
     IDLE = "idle"
     LOADED = "loaded"
@@ -1115,12 +1141,26 @@ class FlightDaemon:
     async def _send_target(self, heli_id: int, target: dict):
         """Send interpolated target through safety monitor."""
         pos, vel = target["pos"], target["vel"]
+        yaw_rad = target.get("yaw_rad")
         if self._safety:
+            # Safety monitor currently ignores yaw — not a safety-critical
+            # signal. It forwards the position+velocity; yaw goes direct.
             await self._safety.check_and_send(
                 heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d)
+            if yaw_rad is not None and self._sender:
+                # Also emit the yaw target directly. Belt-and-braces: the
+                # next safety tick will re-send the same pos+vel with
+                # yaw still not set, but ArduPilot's yaw controller will
+                # keep tracking the last explicit yaw command.
+                self._sender.send_position_target(
+                    heli_id, pos.n, pos.e, pos.d,
+                    vel.n, vel.e, vel.d, yaw_rad=yaw_rad,
+                )
         elif self._sender:
             self._sender.send_position_target(
-                heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d)
+                heli_id, pos.n, pos.e, pos.d,
+                vel.n, vel.e, vel.d, yaw_rad=yaw_rad,
+            )
 
     async def _send_safe(self, heli_id: int,
                           n: float, e: float, d: float,
@@ -1132,20 +1172,40 @@ class FlightDaemon:
             self._sender.send_position_target(heli_id, n, e, d, vn, ve, vd)
 
     def _interpolate(self, track: HeliTrack, t: float) -> dict | None:
-        """Linear interpolation between waypoints."""
+        """Linear interpolation between waypoints.
+
+        Returns {pos, vel, yaw_rad}. yaw_rad is None when both neighbors
+        have yaw_mode='auto' (the default) — daemon then masks yaw and
+        ArduPilot auto-faces the direction of travel. When a neighbor
+        specifies an absolute yaw, we short-path-interpolate between the
+        specified values (or hold the explicit one through the segment).
+        """
         wps = track.waypoints
         if t <= wps[0].t:
-            return {"pos": wps[0].pos, "vel": Vec3(n=0, e=0, d=0)}
+            return {
+                "pos": wps[0].pos,
+                "vel": Vec3(n=0, e=0, d=0),
+                "yaw_rad": _yaw_rad(wps[0]),
+            }
 
         for i in range(len(wps) - 1):
             if wps[i].t <= t <= wps[i + 1].t:
-                if wps[i].hold_s > 0 and t <= wps[i].t + wps[i].hold_s:
-                    return {"pos": wps[i].pos, "vel": Vec3(n=0, e=0, d=0)}
-                dt = wps[i + 1].t - wps[i].t
+                a, b = wps[i], wps[i + 1]
+                if a.hold_s > 0 and t <= a.t + a.hold_s:
+                    return {
+                        "pos": a.pos,
+                        "vel": Vec3(n=0, e=0, d=0),
+                        "yaw_rad": _yaw_rad(a),
+                    }
+                dt = b.t - a.t
                 if dt <= 0:
-                    return {"pos": wps[i + 1].pos, "vel": Vec3(n=0, e=0, d=0)}
-                frac = (t - wps[i].t) / dt
-                p0, p1 = wps[i].pos, wps[i + 1].pos
+                    return {
+                        "pos": b.pos,
+                        "vel": Vec3(n=0, e=0, d=0),
+                        "yaw_rad": _yaw_rad(b),
+                    }
+                frac = (t - a.t) / dt
+                p0, p1 = a.pos, b.pos
                 pos = Vec3(
                     n=p0.n + (p1.n - p0.n) * frac,
                     e=p0.e + (p1.e - p0.e) * frac,
@@ -1156,9 +1216,14 @@ class FlightDaemon:
                     e=(p1.e - p0.e) / dt,
                     d=(p1.d - p0.d) / dt,
                 )
-                return {"pos": pos, "vel": vel}
+                yaw_rad = _interp_yaw(a, b, frac)
+                return {"pos": pos, "vel": vel, "yaw_rad": yaw_rad}
 
-        return {"pos": wps[-1].pos, "vel": Vec3(n=0, e=0, d=0)}
+        return {
+            "pos": wps[-1].pos,
+            "vel": Vec3(n=0, e=0, d=0),
+            "yaw_rad": _yaw_rad(wps[-1]),
+        }
 
     def _gps_to_ned(self, lat: float, lon: float, alt_m: float
                      ) -> tuple[float, float, float]:

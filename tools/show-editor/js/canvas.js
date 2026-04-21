@@ -590,6 +590,34 @@ export class TopdownCanvas {
         ctx.stroke();
       }
 
+      // Yaw arrow for waypoints with yaw_mode='absolute'
+      if (wp.yaw_mode === "absolute" && typeof wp.yaw_deg === "number") {
+        const angScreen = (wp.yaw_deg - 90) * Math.PI / 180;
+        const L = 14;
+        const ex = x + L * Math.cos(angScreen);
+        const ey = y + L * Math.sin(angScreen);
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        // Arrowhead
+        const ah = 4;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(
+          ex - ah * Math.cos(angScreen - 0.4),
+          ey - ah * Math.sin(angScreen - 0.4),
+        );
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(
+          ex - ah * Math.cos(angScreen + 0.4),
+          ey - ah * Math.sin(angScreen + 0.4),
+        );
+        ctx.stroke();
+      }
+
       // Small id label on the first waypoint of each track
       if (i === 0) {
         ctx.fillStyle = col;
@@ -621,19 +649,31 @@ export class TopdownCanvas {
     const ctx = this.ctx;
     const pos = this.lifecycle.positionAt(track.heli_id, this.model.time);
     if (!pos) return;
-    const vel = this.model.velAt(track, this.model.time);
     const col = heliColor(track.heli_id);
     const { x, y } = this.neToScreen(pos.n, pos.e);
 
-    // Direction from velocity (n=up, e=right → screen up = -y, right = +x)
-    // world velocity (vel.n, vel.e) → screen delta (vel.e, -vel.n)
-    const vx = vel.e, vy = -vel.n;
-    const vmag = Math.sqrt(vx * vx + vy * vy);
-    const ang = vmag > 1e-3 ? Math.atan2(vy, vx) : 0;
+    // Heading: explicit yaw_deg if this waypoint span uses yaw_mode='absolute',
+    // otherwise infer from the velocity vector.
+    let angScreen;
+    const showT = this.model.time;
+    const inShow = this.model.show && showT >= 0 && showT <= this.model.show.duration_s;
+    const yawDeg = inShow ? this.model.yawAt(track, showT) : null;
+    if (yawDeg != null) {
+      // Compass heading: 0° = N (screen up), 90° = E (screen right).
+      // Convert to canvas angle: θ_canvas = yaw - 90° (yaw measured
+      // clockwise from north; canvas angles measured from +x axis, CCW
+      // math but with flipped y, so CW visually).
+      angScreen = (yawDeg - 90) * Math.PI / 180;
+    } else {
+      const vel = this.model.velAt(track, showT);
+      const vx = vel.e, vy = -vel.n;
+      const vmag = Math.sqrt(vx * vx + vy * vy);
+      angScreen = vmag > 1e-3 ? Math.atan2(vy, vx) : 0;
+    }
 
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(ang);
+    ctx.rotate(angScreen);
     ctx.fillStyle = col;
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = 1.2;

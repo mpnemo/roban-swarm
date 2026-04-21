@@ -116,6 +116,10 @@ export class ShowModel extends EventBus {
               d: round(w.vel.d, 3),
             };
           }
+          if (w.yaw_mode === "absolute" && typeof w.yaw_deg === "number") {
+            wp.yaw_mode = "absolute";
+            wp.yaw_deg = round(w.yaw_deg, 2);
+          }
           return wp;
         }),
       })),
@@ -423,6 +427,19 @@ export class ShowModel extends EventBus {
       if (patch.vel === null) delete wp.vel;
       else wp.vel = { ...(wp.vel || { n: 0, e: 0, d: 0 }), ...patch.vel };
     }
+    if (patch.yaw_mode !== undefined) {
+      if (patch.yaw_mode === "auto") {
+        delete wp.yaw_mode;
+        delete wp.yaw_deg;
+      } else {
+        wp.yaw_mode = "absolute";
+        if (typeof wp.yaw_deg !== "number") wp.yaw_deg = 0;
+      }
+    }
+    if (patch.yaw_deg !== undefined) {
+      wp.yaw_deg = ((Number(patch.yaw_deg) % 360) + 360) % 360;
+      if (wp.yaw_mode !== "absolute") wp.yaw_mode = "absolute";
+    }
     if (patch.t !== undefined) {
       track.waypoints.sort((a, b) => a.t - b.t);
       const newIdx = track.waypoints.indexOf(wp);
@@ -527,6 +544,39 @@ export class ShowModel extends EventBus {
     const v = this.velAt(track, t);
     return Math.sqrt(v.n * v.n + v.e * v.e + v.d * v.d);
   }
+
+  /**
+   * Yaw in degrees at time t, or null if no waypoint specifies an
+   * absolute yaw (daemon falls back to auto-face-travel). Short-path
+   * interpolation across segments; holds inside hold windows.
+   */
+  yawAt(track, t) {
+    const wps = track.waypoints;
+    if (!wps || !wps.length) return null;
+    if (t <= wps[0].t) return getYaw(wps[0]);
+    for (let i = 0; i < wps.length - 1; i++) {
+      if (wps[i].t <= t && t <= wps[i + 1].t) {
+        const a = wps[i], b = wps[i + 1];
+        const dt = b.t - a.t;
+        if (dt <= 0) return getYaw(b);
+        const frac = (t - a.t) / dt;
+        const ya = getYaw(a);
+        const yb = getYaw(b);
+        if (ya == null && yb == null) return null;
+        if (ya == null) return yb;
+        if (yb == null) return ya;
+        // Short-path angular lerp (degrees)
+        let dy = ((yb - ya + 180) % 360 + 360) % 360 - 180;
+        return (ya + dy * frac + 360) % 360;
+      }
+    }
+    return getYaw(wps[wps.length - 1]);
+  }
+}
+
+function getYaw(wp) {
+  if (wp?.yaw_mode !== "absolute") return null;
+  return typeof wp.yaw_deg === "number" ? wp.yaw_deg : null;
 }
 
 // ------- parsing -------
@@ -682,6 +732,13 @@ function parseAndExpand(raw) {
           typeof rw.vel.e === "number" &&
           typeof rw.vel.d === "number") {
         wp.vel = { n: rw.vel.n, e: rw.vel.e, d: rw.vel.d };
+      }
+      // Yaw (optional). yaw_mode defaults to 'auto' (mask yaw in daemon).
+      if (typeof rw.yaw_deg === "number") {
+        wp.yaw_deg = ((rw.yaw_deg % 360) + 360) % 360;
+      }
+      if (rw.yaw_mode === "absolute") {
+        wp.yaw_mode = "absolute";
       }
       waypoints.push(wp);
 

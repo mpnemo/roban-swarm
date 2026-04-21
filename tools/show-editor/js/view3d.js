@@ -296,8 +296,16 @@ export class ThreeView {
     const dotMat = new THREE.MeshLambertMaterial({ color: heli });
     for (const wp of wps) {
       const m = new THREE.Mesh(dotGeom, dotMat);
-      m.position.copy(nedToThree(wp.pos.n + off.n, wp.pos.e + off.e, wp.pos.d + off.d));
+      const p3 = nedToThree(wp.pos.n + off.n, wp.pos.e + off.e, wp.pos.d + off.d);
+      m.position.copy(p3);
       this.tracksGroup.add(m);
+      // Yaw indicator on waypoints with yaw_mode='absolute'
+      if (wp.yaw_mode === "absolute" && typeof wp.yaw_deg === "number") {
+        const yr = wp.yaw_deg * Math.PI / 180;
+        const dir = new THREE.Vector3(Math.sin(yr), 0, -Math.cos(yr)).normalize();
+        const arrow = new THREE.ArrowHelper(dir, p3, 0.8, 0xffffff, 0.25, 0.15);
+        this.tracksGroup.add(arrow);
+      }
     }
 
     // Smooth overlay — dashed
@@ -327,17 +335,44 @@ export class ThreeView {
     if (!show) return;
     const t = this.model.time;
     const geom = new THREE.SphereGeometry(0.3, 16, 16);
+    const inShow = t >= 0 && t <= show.duration_s;
     for (const track of show.tracks) {
       const p = this.lifecycle.positionAt(track.heli_id, t);
       if (!p) continue;
+      const col = heliColor(track.heli_id);
       const mat = new THREE.MeshLambertMaterial({
-        color: heliColor(track.heli_id),
-        emissive: heliColor(track.heli_id),
+        color: col,
+        emissive: col,
         emissiveIntensity: 0.35,
       });
       const m = new THREE.Mesh(geom, mat);
       m.position.copy(nedToThree(p.n, p.e, p.d));
       this.markersGroup.add(m);
+
+      // Heading arrow: explicit yaw if set in this span, else velocity
+      const yawDeg = inShow ? this.model.yawAt(track, t) : null;
+      let dir = null;
+      if (yawDeg != null) {
+        // Convert compass yaw (0=N, 90=E) to Three.js world vector.
+        // N is -Z, E is +X in our mapping.
+        const yr = yawDeg * Math.PI / 180;
+        dir = new THREE.Vector3(Math.sin(yr), 0, -Math.cos(yr)).normalize();
+      } else {
+        const v = this.model.velAt(track, t);
+        const vmag = Math.sqrt(v.n * v.n + v.e * v.e);
+        if (vmag > 0.1) {
+          dir = new THREE.Vector3(v.e, 0, -v.n).normalize();
+        }
+      }
+      if (dir) {
+        const origin = nedToThree(p.n, p.e, p.d);
+        const arrow = new THREE.ArrowHelper(
+          dir, origin, 1.2, col, 0.35, 0.2,
+        );
+        arrow.line.material.transparent = true;
+        arrow.line.material.opacity = 0.9;
+        this.markersGroup.add(arrow);
+      }
     }
   }
 

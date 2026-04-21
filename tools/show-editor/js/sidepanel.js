@@ -339,6 +339,8 @@ export class SidePanel {
   _waypointDetailSection(track, idx, wp) {
     const altM = -wp.pos.d;
     const hasVel = !!wp.vel;
+    const yawAbsolute = wp.yaw_mode === "absolute";
+    const yawDeg = typeof wp.yaw_deg === "number" ? wp.yaw_deg : 0;
     return `
       <section class="pane-section">
         <h2>Waypoint ${idx}</h2>
@@ -358,12 +360,25 @@ export class SidePanel {
           <label>alt AGL (m)</label>
           <input type="number" step="0.1" min="0" data-bind="wp.alt" value="${altM.toFixed(3)}" />
         </div>
+        <div class="field-row">
+          <label>yaw mode</label>
+          <select data-bind="wp.yaw_mode">
+            <option value="auto" ${yawAbsolute ? "" : "selected"}>auto (face travel)</option>
+            <option value="absolute" ${yawAbsolute ? "selected" : ""}>absolute heading</option>
+          </select>
+        </div>
+        ${yawAbsolute ? `
+          <div class="field-row">
+            <label>yaw (° 0–360)</label>
+            <input type="number" step="1" min="0" max="360" data-bind="wp.yaw_deg" value="${yawDeg}" />
+          </div>
+        ` : ""}
         <div class="field-row checkbox-row">
           <label>
             <input type="checkbox" data-bind="wp.vel.enabled" ${hasVel ? "checked" : ""} />
             velocity hint
           </label>
-        </div>
+        </div>`
         ${hasVel ? `
           <div class="field-row">
             <label>vN (m/s)</label>
@@ -581,6 +596,14 @@ export class SidePanel {
       } else if (bind === "wp.alt") {
         this.model.updateWaypoint(track.heli_id, sel.waypointIdx, {
           pos: { d: -num(inp) },
+        });
+      } else if (bind === "wp.yaw_mode") {
+        this.model.updateWaypoint(track.heli_id, sel.waypointIdx, {
+          yaw_mode: inp.value === "absolute" ? "absolute" : "auto",
+        });
+      } else if (bind === "wp.yaw_deg") {
+        this.model.updateWaypoint(track.heli_id, sel.waypointIdx, {
+          yaw_deg: num(inp),
         });
       } else if (bind === "wp.vel.enabled") {
         if (inp.checked) {

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
 
 
 class HeliPhase(str, Enum):
@@ -79,6 +79,18 @@ class Waypoint(BaseModel):
         default=0,
         ge=0,
         description="Hold at this waypoint for N seconds before moving on",
+    )
+    yaw_deg: Optional[float] = Field(
+        default=None,
+        description="Optional compass heading (0-360°, 0=N, 90=E) held at "
+                    "this waypoint. If absent (on both neighbors), daemon "
+                    "masks yaw and ArduPilot auto-faces direction of travel.",
+    )
+    yaw_mode: Literal["auto", "absolute"] = Field(
+        default="auto",
+        description="'auto' (default) ignores yaw_deg and auto-faces "
+                    "direction of travel. 'absolute' sends yaw_deg as a "
+                    "compass heading.",
     )
 
 
