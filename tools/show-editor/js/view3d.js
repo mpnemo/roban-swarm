@@ -108,8 +108,11 @@ export class ThreeView {
       if (!hasAny) { box.min.copy(p); box.max.copy(p); hasAny = true; }
       else box.expandByPoint(p);
     };
+    const off = this.model.getOffset();
     for (const t of s.tracks) {
-      for (const w of t.waypoints) expand(nedToThree(w.pos.n, w.pos.e, w.pos.d));
+      for (const w of t.waypoints) {
+        expand(nedToThree(w.pos.n + off.n, w.pos.e + off.e, w.pos.d + off.d));
+      }
     }
     const positions = s.lineup?.positions;
     if (positions) {
@@ -257,6 +260,7 @@ export class ThreeView {
     const wps = track.waypoints;
     const heli = new THREE.Color(heliColor(track.heli_id));
     const maxSpeed = track.style.max_speed || 1;
+    const off = this.model.getOffset();
 
     // Solid trajectory: LineSegments with per-vertex colors — one color
     // per segment, anchored to each segment's linear-interp speed.
@@ -272,8 +276,8 @@ export class ThreeView {
         const speed = Math.sqrt(dn * dn + de * de + dd * dd) / dt;
         const ratio = speed / maxSpeed;
         const segCol = segmentColor(ratio, speed, heli);
-        const pA = nedToThree(a.pos.n, a.pos.e, a.pos.d);
-        const pB = nedToThree(b.pos.n, b.pos.e, b.pos.d);
+        const pA = nedToThree(a.pos.n + off.n, a.pos.e + off.e, a.pos.d + off.d);
+        const pB = nedToThree(b.pos.n + off.n, b.pos.e + off.e, b.pos.d + off.d);
         const off = i * 6;
         positions[off + 0] = pA.x; positions[off + 1] = pA.y; positions[off + 2] = pA.z;
         positions[off + 3] = pB.x; positions[off + 4] = pB.y; positions[off + 5] = pB.z;
@@ -292,13 +296,15 @@ export class ThreeView {
     const dotMat = new THREE.MeshLambertMaterial({ color: heli });
     for (const wp of wps) {
       const m = new THREE.Mesh(dotGeom, dotMat);
-      m.position.copy(nedToThree(wp.pos.n, wp.pos.e, wp.pos.d));
+      m.position.copy(nedToThree(wp.pos.n + off.n, wp.pos.e + off.e, wp.pos.d + off.d));
       this.tracksGroup.add(m);
     }
 
     // Smooth overlay — dashed
     if (this.showSmooth && wps.length >= 2) {
-      const pts = wps.map((w) => w.pos);
+      const pts = wps.map((w) => ({
+        n: w.pos.n + off.n, e: w.pos.e + off.e, d: w.pos.d + off.d,
+      }));
       const smooth = catmullRom(pts, 18);
       const verts = smooth.map((p) => nedToThree(p.n, p.e, p.d));
       const geom = new THREE.BufferGeometry().setFromPoints(verts);

@@ -156,6 +156,8 @@ export class SidePanel {
   }
 
   _showSection(s) {
+    const off = s.show_offset ?? { n: 0, e: 0, d: 0 };
+    const offActive = !!s.show_offset && (off.n !== 0 || off.e !== 0 || off.d !== 0);
     return `
       <section class="pane-section">
         <h2>Show</h2>
@@ -179,7 +181,24 @@ export class SidePanel {
           <label>home alt (m)</label>
           <input type="number" step="any" data-bind="show.home_alt_m" value="${s.home_alt_m}" />
         </div>
-        <p class="hint">home_lat/lon are informational — flight daemon captures real values at lineup.</p>
+        <p class="hint">home_lat/lon are informational — daemon captures real values at lineup.</p>
+      </section>
+      <section class="pane-section">
+        <h2>Show offset (G54) ${offActive ? `<span class="ok-badge">active</span>` : `<span class="hint" style="text-transform:none">zero</span>`}</h2>
+        <div class="field-row">
+          <label>N (m)</label>
+          <input type="number" step="0.1" data-bind="show.offset.n" value="${off.n}" />
+        </div>
+        <div class="field-row">
+          <label>E (m)</label>
+          <input type="number" step="0.1" data-bind="show.offset.e" value="${off.e}" />
+        </div>
+        <div class="field-row">
+          <label>D (m)</label>
+          <input type="number" step="0.1" data-bind="show.offset.d" value="${off.d}" />
+        </div>
+        <p class="hint">Added to every waypoint at daemon load. Waypoint numbers above stay in authored coords — the canvas shows the offset-applied result.</p>
+        ${offActive ? `<div class="action-row"><button class="btn-mini" id="offset-clear">Clear offset</button></div>` : ""}
       </section>
     `;
   }
@@ -355,6 +374,11 @@ export class SidePanel {
       try { this.model.addTrack(); } catch (err) { alert(err.message); }
     });
 
+    // show_offset clear
+    this.root.querySelector("#offset-clear")?.addEventListener("click", () => {
+      this.model.setShowOffset(null);
+    });
+
     // lineup: per-row set/clear
     for (const btn of this.root.querySelectorAll("[data-set-lineup]")) {
       btn.addEventListener("click", () => {
@@ -453,6 +477,11 @@ export class SidePanel {
         this.model.updateShowMeta({ home_lon: num(inp) });
       } else if (bind === "show.home_alt_m") {
         this.model.updateShowMeta({ home_alt_m: num(inp) });
+      } else if (bind.startsWith("show.offset.")) {
+        const axis = bind.slice("show.offset.".length);
+        const current = this.model.show.show_offset ?? { n: 0, e: 0, d: 0 };
+        const next = { ...current, [axis]: num(inp) };
+        this.model.setShowOffset(next);
       } else if (bind === "lineup.tolerance_m") {
         const v = num(inp);
         if (v < 0) throw new Error("tolerance_m must be >= 0");

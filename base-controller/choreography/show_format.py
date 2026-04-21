@@ -133,6 +133,13 @@ class ShowFile(BaseModel):
     home_lat: float = Field(description="Home latitude (decimal degrees)")
     home_lon: float = Field(description="Home longitude (decimal degrees)")
     home_alt_m: float = Field(default=0, description="Home altitude AMSL (m)")
+    show_offset: Optional[Vec3] = Field(
+        default=None,
+        description="G54-style offset applied to every waypoint at load "
+                    "time. Lets a show be designed centered on (0,0,0) and "
+                    "translated in space without editing every waypoint. "
+                    "Daemon adds this to each wp.pos in `load_show`.",
+    )
     lineup: Optional[LineupSpec] = Field(
         default=None,
         description="Planned lineup + placement tolerance. Optional; daemon "

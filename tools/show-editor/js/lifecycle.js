@@ -177,7 +177,8 @@ export class Lifecycle {
     let maxTraverseTime = 0;
     for (const id of ids) {
       const track = this.model.getTrack(id);
-      const wp0 = track.waypoints[0]?.pos;
+      const wp0raw = track.waypoints[0]?.pos;
+      const wp0 = wp0raw ? this.model.applyOffset(wp0raw) : null;
       const lineup = this.lineupPos(id);
       if (!wp0 || !lineup) { traverseInfo[id] = null; continue; }
       const dist = Math.hypot(wp0.n - lineup.n, wp0.e - lineup.e);
@@ -239,7 +240,8 @@ export class Lifecycle {
     for (const id of ids) {
       const idx = ids.indexOf(id);
       const track = this.model.getTrack(id);
-      const wpN = track.waypoints[track.waypoints.length - 1]?.pos;
+      const wpNraw = track.waypoints[track.waypoints.length - 1]?.pos;
+      const wpN = wpNraw ? this.model.applyOffset(wpNraw) : null;
       const lineup = this.lineupPos(id);
       if (!wpN || !lineup) { returnInfo[id] = null; continue; }
       const returnAlt = ops.RETURN_BASE_ALT_M + idx * ops.RETURN_ALT_STEP_M;
@@ -284,7 +286,8 @@ export class Lifecycle {
     if (!intro) return null;
     const lineup = this.lineupPos(heli_id);
     const track = this.model.getTrack(heli_id);
-    const wp0 = track?.waypoints[0]?.pos;
+    const wp0raw = track?.waypoints[0]?.pos;
+    const wp0 = wp0raw ? this.model.applyOffset(wp0raw) : null;
     const per = intro.perHeli[heli_id];
     if (!lineup || !wp0 || !per) return null;
 
@@ -336,7 +339,8 @@ export class Lifecycle {
     if (!outro) return null;
     const lineup = this.lineupPos(heli_id);
     const track = this.model.getTrack(heli_id);
-    const wpN = track?.waypoints[track.waypoints.length - 1]?.pos;
+    const wpNraw = track?.waypoints[track.waypoints.length - 1]?.pos;
+    const wpN = wpNraw ? this.model.applyOffset(wpNraw) : null;
     const per = outro.perHeli[heli_id];
     if (!lineup || !wpN || !per) return null;
 

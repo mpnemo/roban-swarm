@@ -262,12 +262,13 @@ export class TopdownCanvas {
     const s = this.model.show;
     if (!s) return null;
     const HIT_RADIUS = 10;
+    const off = this.model.getOffset();
     // Render order: tracks then waypoints. Hit in reverse so topmost wins.
     for (let ti = s.tracks.length - 1; ti >= 0; ti--) {
       const track = s.tracks[ti];
       for (let wi = track.waypoints.length - 1; wi >= 0; wi--) {
         const wp = track.waypoints[wi];
-        const scr = this.neToScreen(wp.pos.n, wp.pos.e);
+        const scr = this.neToScreen(wp.pos.n + off.n, wp.pos.e + off.e);
         if (Math.hypot(scr.x - px, scr.y - py) < HIT_RADIUS) {
           return { heliId: track.heli_id, wpIdx: wi, wp };
         }
@@ -296,15 +297,17 @@ export class TopdownCanvas {
     const selId = this.model.selection.heliId;
     const track = selId != null ? this.model.getTrack(selId) : null;
     if (!track) return;
-    const ne = this.screenToNE(px, py);
-    // Keep altitude unchanged from interpolated value at current time, so
-    // a top-down click never accidentally moves a heli up or down.
-    const t = this.model.time;
-    const interp = this.model.interpolate(track, t);
+    // Click is in world (flown) coords — subtract show_offset to store authored.
+    const worldNE = this.screenToNE(px, py);
+    const off = this.model.getOffset();
+    // Keep altitude unchanged from interpolated (authored) value at current time,
+    // so a top-down click never accidentally moves a heli up or down.
+    const t = Math.max(0, Math.min(s.duration_s, this.model.time));
+    const interp = this.model.interpolateAuthored(track, t);
     const d = interp ? interp.d : -5;
     this.model.addWaypoint(track.heli_id, {
       t,
-      pos: { n: ne.n, e: ne.e, d },
+      pos: { n: worldNE.n - off.n, e: worldNE.e - off.e, d },
     });
   }
 
@@ -429,7 +432,10 @@ export class TopdownCanvas {
   _drawSmoothOverlay(track) {
     const wps = track.waypoints;
     if (wps.length < 2) return;
-    const pts = wps.map((w) => w.pos);
+    const off = this.model.getOffset();
+    const pts = wps.map((w) => ({
+      n: w.pos.n + off.n, e: w.pos.e + off.e, d: w.pos.d + off.d,
+    }));
     const smooth = catmullRom(pts, 18);
     const ctx = this.ctx;
     ctx.save();
@@ -527,6 +533,7 @@ export class TopdownCanvas {
     const wps = track.waypoints;
     if (wps.length < 2) return;
     const maxSpeed = track.style.max_speed || 1;
+    const off = this.model.getOffset();
     ctx.lineWidth = 2;
     ctx.lineCap = "round";
     for (let i = 0; i < wps.length - 1; i++) {
@@ -543,8 +550,8 @@ export class TopdownCanvas {
           ? heliColor(track.heli_id) + "66"  // semi-transparent heli color for stationary hold
           : speedColor(ratio);
       ctx.strokeStyle = color;
-      const pa = this.neToScreen(a.pos.n, a.pos.e);
-      const pb = this.neToScreen(b.pos.n, b.pos.e);
+      const pa = this.neToScreen(a.pos.n + off.n, a.pos.e + off.e);
+      const pb = this.neToScreen(b.pos.n + off.n, b.pos.e + off.e);
       ctx.beginPath();
       ctx.moveTo(pa.x, pa.y);
       ctx.lineTo(pb.x, pb.y);
@@ -557,9 +564,10 @@ export class TopdownCanvas {
     const col = heliColor(track.heli_id);
     const sel = this.model.selection;
     const isTrackSel = sel.heliId === track.heli_id;
+    const off = this.model.getOffset();
     for (let i = 0; i < track.waypoints.length; i++) {
       const wp = track.waypoints[i];
-      const { x, y } = this.neToScreen(wp.pos.n, wp.pos.e);
+      const { x, y } = this.neToScreen(wp.pos.n + off.n, wp.pos.e + off.e);
       const isPair = this._isHoldPair(track, i);
       const r = isPair ? HOLD_DOT_RADIUS : WP_DOT_RADIUS;
       const isSel = isTrackSel && sel.waypointIdx === i;

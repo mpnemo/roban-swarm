@@ -48,6 +48,7 @@ export class ShowModel extends EventBus {
       home_lat: 0,
       home_lon: 0,
       home_alt_m: 0,
+      show_offset: null,
       lineup: null,
       duration_s,
       tracks: [
@@ -117,6 +118,14 @@ export class ShowModel extends EventBus {
         }),
       })),
     };
+    // Emit optional show_offset when set.
+    if (s.show_offset && (s.show_offset.n || s.show_offset.e || s.show_offset.d)) {
+      out.show_offset = {
+        n: round(s.show_offset.n, 3),
+        e: round(s.show_offset.e, 3),
+        d: round(s.show_offset.d, 3),
+      };
+    }
     // Emit optional lineup when present.
     if (s.lineup && s.lineup.positions) {
       const entries = Object.entries(s.lineup.positions)
@@ -131,6 +140,20 @@ export class ShowModel extends EventBus {
       }
     }
     return JSON.stringify(out, null, 2);
+  }
+
+  /** Set or clear the show_offset. Pass null to clear, or {n,e,d} to set. */
+  setShowOffset(offset) {
+    if (!this.show) return;
+    if (!offset || (offset.n === 0 && offset.e === 0 && offset.d === 0)) {
+      this.show.show_offset = null;
+    } else {
+      this.show.show_offset = {
+        n: offset.n ?? 0, e: offset.e ?? 0, d: offset.d ?? 0,
+      };
+    }
+    this.dirty = true;
+    this.emit("show-changed");
   }
 
   // --------- lineup ---------
@@ -376,10 +399,36 @@ export class ShowModel extends EventBus {
     this.emit("show-changed");
   }
 
+  // ------- offset helpers -------
+
+  /** Current show_offset as a Vec3 (zeroes if unset). */
+  getOffset() {
+    const o = this.show?.show_offset;
+    return o ? { n: o.n, e: o.e, d: o.d } : { n: 0, e: 0, d: 0 };
+  }
+
+  /** Authored → flown position (apply show_offset). */
+  applyOffset(pos) {
+    const o = this.getOffset();
+    return { n: pos.n + o.n, e: pos.e + o.e, d: pos.d + o.d };
+  }
+
+  /** Flown → authored position (subtract show_offset). */
+  removeOffset(pos) {
+    const o = this.getOffset();
+    return { n: pos.n - o.n, e: pos.e - o.e, d: pos.d - o.d };
+  }
+
   // ------- interpolation helpers (linear, hold-free by construction) -------
 
-  /** Interpolated NED position of a track at time t. */
+  /** Interpolated NED position of a track at time t, offset applied. */
   interpolate(track, t) {
+    const authored = posAt(track, t);
+    return authored ? this.applyOffset(authored) : null;
+  }
+
+  /** Raw authored position (no offset) — for the edit UI. */
+  interpolateAuthored(track, t) {
     return posAt(track, t);
   }
 
@@ -442,10 +491,21 @@ function parseAndExpand(raw) {
     home_lat: typeof raw.home_lat === "number" ? raw.home_lat : 0,
     home_lon: typeof raw.home_lon === "number" ? raw.home_lon : 0,
     home_alt_m: typeof raw.home_alt_m === "number" ? raw.home_alt_m : 0,
+    show_offset: null,
     lineup: null,
     duration_s: raw.duration_s,
     tracks: [],
   };
+
+  // Optional show_offset (G54-style, applied by daemon at load)
+  if (raw.show_offset && typeof raw.show_offset === "object") {
+    const o = raw.show_offset;
+    if (typeof o.n === "number" && typeof o.e === "number" && typeof o.d === "number") {
+      show.show_offset = { n: o.n, e: o.e, d: o.d };
+    } else {
+      errors.push("show_offset: must be {n, e, d}");
+    }
+  }
 
   // Optional lineup
   if (raw.lineup && typeof raw.lineup === "object") {

@@ -351,6 +351,7 @@ export class AltitudeView {
     const maxSpeed = track.style.max_speed || 1;
     const sel = this.model.selection;
     const isTrackSel = sel.heliId === track.heli_id;
+    const off = this.model.getOffset();
 
     ctx.lineWidth = 2;
     ctx.lineCap = "round";
@@ -368,15 +369,15 @@ export class AltitudeView {
         speedColor(ratio);
       ctx.strokeStyle = color;
       ctx.beginPath();
-      ctx.moveTo(this.tToX(a.t), this.altToY(-a.pos.d));
-      ctx.lineTo(this.tToX(b.t), this.altToY(-b.pos.d));
+      ctx.moveTo(this.tToX(a.t), this.altToY(-(a.pos.d + off.d)));
+      ctx.lineTo(this.tToX(b.t), this.altToY(-(b.pos.d + off.d)));
       ctx.stroke();
     }
 
     for (let i = 0; i < wps.length; i++) {
       const wp = wps[i];
       const x = this.tToX(wp.t);
-      const y = this.altToY(-wp.pos.d);
+      const y = this.altToY(-(wp.pos.d + off.d));
       const isSel = isTrackSel && sel.waypointIdx === i;
       ctx.beginPath();
       ctx.arc(x, y, isSel ? 5 : 3.5, 0, Math.PI * 2);
@@ -466,10 +467,13 @@ export class AltitudeView {
       : this.model.show.duration_s;
     const t = clamp(this.xToT(px), prevT, nextT);
     const snapT = Math.round(t * 10) / 10;
-    const alt = Math.max(0, this.yToAlt(py));
+    const altWorld = Math.max(0, this.yToAlt(py));
+    // authored.d = -altWorld - offset.d so the rendered dot lands under
+    // the cursor's world altitude.
+    const off = this.model.getOffset();
     this.model.updateWaypoint(this._drag.heliId, idx, {
       t: snapT,
-      pos: { d: -alt },
+      pos: { d: -altWorld - off.d },
     });
   }
 
@@ -494,12 +498,15 @@ export class AltitudeView {
     const { x0, w, y0, h } = this._plotArea();
     if (px < x0 || px > x0 + w || py < y0 || py > y0 + h) return;
     const t = clamp(this.xToT(px), 0, this.model.show.duration_s);
-    const alt = Math.max(0, this.yToAlt(py));
-    // N/E inherit from interpolated position at the clicked time.
-    const interp = this.model.interpolate(track, t) ?? { n: 0, e: 0, d: -5 };
+    const altWorld = Math.max(0, this.yToAlt(py));
+    // Store in authored frame. N/E inherit from interpolated authored
+    // position at clicked time. Altitude: world_alt = -(authored.d + offset.d)
+    //  → authored.d = -altWorld - offset.d.
+    const interp = this.model.interpolateAuthored(track, t) ?? { n: 0, e: 0, d: -5 };
+    const off = this.model.getOffset();
     this.model.addWaypoint(track.heli_id, {
       t: Math.round(t * 10) / 10,
-      pos: { n: interp.n, e: interp.e, d: -alt },
+      pos: { n: interp.n, e: interp.e, d: -altWorld - off.d },
     });
   }
 }

@@ -158,11 +158,28 @@ class FlightDaemon:
         return self.load_show(show)
 
     def load_show(self, show: ShowFile) -> list[str]:
-        """Load and validate a show. Returns errors (empty=ok)."""
+        """Load and validate a show. Returns errors (empty=ok).
+
+        If show.show_offset is set, adds it to every waypoint position
+        before storing — G54-style offset, per the show-editor contract.
+        """
         errors = show.validate_timing()
         if errors:
             self._state = DaemonState.ERROR
             return errors
+        # Apply show_offset in place — editor can round-trip the field
+        # because we don't strip it; only the in-memory wp.pos values
+        # are shifted. On re-save, offset stays in JSON.
+        if show.show_offset is not None:
+            off = show.show_offset
+            if off.n != 0 or off.e != 0 or off.d != 0:
+                for track in show.tracks:
+                    for wp in track.waypoints:
+                        wp.pos.n += off.n
+                        wp.pos.e += off.e
+                        wp.pos.d += off.d
+                log.info("Applied show_offset n=%.2f e=%.2f d=%.2f",
+                         off.n, off.e, off.d)
         self._show = show
         self._lineup = None  # Reset lineup when new show loaded
         self._state = DaemonState.LOADED
