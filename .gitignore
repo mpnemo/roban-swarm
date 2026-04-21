@@ -25,6 +25,11 @@ Thumbs.db
 *.deb
 *.tar.gz
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # Disk images (multi-GB, stored on OneDrive not git)
 images/*.img
 images/*.img.gz
