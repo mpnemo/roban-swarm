@@ -321,6 +321,43 @@ Font: system UI stack. Monospace only for numeric fields.
 - **Speed gradient is a render-only detail**, not model state. Computed
   from neighboring waypoints on the fly, scaled to each heli's `max_speed`.
 
+## Follow-ups queued for later sessions
+
+### Runtime telemetry-based pairwise watchdog (option C, deferred)
+
+Editor-side and daemon-side design-time collision safety now cover each
+other:
+- Editor: `validateLifecycleSafety` + the visual proximity system
+  (red bubbles in canvas/3D, red ticks on the scrubber) surface any
+  within-3m condition across intro/show/outro at design time.
+- Daemon: altitude-stacked intro (heli `i` at `hover_alt_m + i *
+  hover_alt_step_m`) and altitude-stacked outro (heli `i` at
+  `return_base_alt_m + i * return_alt_step_m`) make those phases
+  safe by construction — paths that cross horizontally are
+  separated vertically.
+
+What's still missing: a **runtime** pairwise distance watchdog.
+`safety_monitor.py` today checks pairwise distance only against
+**commanded targets**, which during the staging traverse are each
+heli's final `wp0` — always far apart even when paths cross.
+There's no monitor using live GPS telemetry to detect actual mid-air
+proximity.
+
+When we need it (field soak, SIM → real transition, or if the stack
+ever gains a mode that doesn't use altitude-stacking for intro/outro):
+
+- Add a periodic task in `FlightDaemon._inflight_monitor` that reads
+  live GPS positions from `VehicleTracker`, computes pairwise 3D
+  distances, and on sub-2m violations sends `BRAKE` to both helis
+  and emits a `safety_warning` event.
+- Threshold needs tuning so RTK float drift doesn't trigger false
+  positives. Probably hysteresis — fire on `< 2m for > 1s`.
+- Consider whether BRAKE or a staggered altitude nudge is the right
+  reaction; BRAKE on a closing pair may not separate them.
+
+Cost estimate: ~40 lines in `safety_monitor.py` + plumbing, plus
+real-flight tuning.
+
 ## v2 candidates (not in v1)
 
 - **Terrain / map overlay** (Mission-Planner-style): raster tile layer or
