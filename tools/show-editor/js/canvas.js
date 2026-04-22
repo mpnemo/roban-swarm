@@ -343,8 +343,30 @@ export class TopdownCanvas {
       }
       for (const track of show.tracks) this._drawTrackPolyline(track);
       for (const track of show.tracks) this._drawWaypoints(track);
+      this._conflictingNow = this.lifecycle.conflictingHelisAt(this.model.time);
       for (const track of show.tracks) this._drawLiveMarker(track);
+      this._drawProximityLinks();
     }
+  }
+
+  /** Red dashed line between each pair currently < 3m apart. */
+  _drawProximityLinks() {
+    const pairs = this.lifecycle.proximityPairsAt(this.model.time);
+    if (pairs.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = "#ff1744";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    for (const c of pairs) {
+      const sa = this.neToScreen(c.p_a.n, c.p_a.e);
+      const sb = this.neToScreen(c.p_b.n, c.p_b.e);
+      ctx.beginPath();
+      ctx.moveTo(sa.x, sa.y);
+      ctx.lineTo(sb.x, sb.y);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   _drawLineupDot(track) {
@@ -651,6 +673,25 @@ export class TopdownCanvas {
     if (!pos) return;
     const col = heliColor(track.heli_id);
     const { x, y } = this.neToScreen(pos.n, pos.e);
+
+    // Proximity bubble: if this heli is within min_sep of any other, draw
+    // a red dashed ring at threshold radius around it.
+    const inConflict = this._conflictingNow?.has(track.heli_id);
+    if (inConflict) {
+      const rPx = 3.0 * this.view.scale;
+      if (rPx > 6) {
+        ctx.save();
+        ctx.strokeStyle = "#ff1744";
+        ctx.fillStyle = "rgba(255, 23, 68, 0.06)";
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(x, y, rPx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
 
     // Heading: explicit yaw_deg if this waypoint span uses yaw_mode='absolute',
     // otherwise infer from the velocity vector.

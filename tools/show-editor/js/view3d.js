@@ -336,10 +336,12 @@ export class ThreeView {
     const t = this.model.time;
     const geom = new THREE.SphereGeometry(0.3, 16, 16);
     const inShow = t >= 0 && t <= show.duration_s;
+    const conflictingNow = this.lifecycle.conflictingHelisAt(t);
     for (const track of show.tracks) {
       const p = this.lifecycle.positionAt(track.heli_id, t);
       if (!p) continue;
       const col = heliColor(track.heli_id);
+      const inConflict = conflictingNow.has(track.heli_id);
       const mat = new THREE.MeshLambertMaterial({
         color: col,
         emissive: col,
@@ -373,6 +375,37 @@ export class ThreeView {
         arrow.line.material.opacity = 0.9;
         this.markersGroup.add(arrow);
       }
+
+      // Proximity bubble: transparent red wireframe sphere at threshold
+      // radius. Opaque edges make it visible even at a glance.
+      if (inConflict) {
+        const bubbleGeom = new THREE.SphereGeometry(
+          Lifecycle.MIN_SEP_M, 20, 12,
+        );
+        const bubbleMat = new THREE.MeshBasicMaterial({
+          color: 0xff1744,
+          transparent: true,
+          opacity: 0.15,
+          wireframe: true,
+        });
+        const bubble = new THREE.Mesh(bubbleGeom, bubbleMat);
+        bubble.position.copy(nedToThree(p.n, p.e, p.d));
+        this.markersGroup.add(bubble);
+      }
+    }
+
+    // Red segments between each conflicting pair.
+    const pairs = this.lifecycle.proximityPairsAt(t);
+    for (const c of pairs) {
+      const a = nedToThree(c.p_a.n, c.p_a.e, c.p_a.d);
+      const b = nedToThree(c.p_b.n, c.p_b.e, c.p_b.d);
+      const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+      const m = new THREE.LineBasicMaterial({
+        color: 0xff1744,
+        transparent: true,
+        opacity: 0.85,
+      });
+      this.markersGroup.add(new THREE.Line(g, m));
     }
   }
 

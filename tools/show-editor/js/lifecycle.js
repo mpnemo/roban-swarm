@@ -111,6 +111,73 @@ export class Lifecycle {
     return t ? t.duration : 0;
   }
 
+  // ---------- proximity ----------
+
+  /** Default proximity threshold, matches validate.js min_sep. */
+  static MIN_SEP_M = 3.0;
+
+  /**
+   * Pairs currently within minSepM at global time t. Uses lifecycle
+   * positions (so works across intro / show / outro).
+   * @returns {{a:number, b:number, dist:number, p_a:object, p_b:object}[]}
+   */
+  proximityPairsAt(t, minSepM = Lifecycle.MIN_SEP_M) {
+    const show = this.model.show;
+    if (!show) return [];
+    const positions = new Map();
+    for (const track of show.tracks) {
+      const p = this.positionAt(track.heli_id, t);
+      if (p) positions.set(track.heli_id, p);
+    }
+    const ids = [...positions.keys()];
+    const out = [];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = positions.get(ids[i]), b = positions.get(ids[j]);
+        const dn = a.n - b.n, de = a.e - b.e, dd = a.d - b.d;
+        const dist = Math.sqrt(dn * dn + de * de + dd * dd);
+        if (dist < minSepM) {
+          out.push({ a: ids[i], b: ids[j], dist, p_a: a, p_b: b });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Heli_ids with at least one proximity conflict at time t. */
+  conflictingHelisAt(t, minSepM = Lifecycle.MIN_SEP_M) {
+    const out = new Set();
+    for (const c of this.proximityPairsAt(t, minSepM)) {
+      out.add(c.a); out.add(c.b);
+    }
+    return out;
+  }
+
+  /**
+   * Time samples where any pair is within minSepM. Used by the scrubber
+   * to mark conflict windows. Cached — depends only on show structure.
+   */
+  proximitySampleTimes(minSepM = Lifecycle.MIN_SEP_M, stepS = 0.5) {
+    this._buildCacheIfStale();
+    const cacheKey = `${minSepM}|${stepS}`;
+    if (this._proxCache && this._proxCacheKey === cacheKey &&
+        this._proxCacheShowKey === this._cacheKey) {
+      return this._proxCache;
+    }
+    const show = this.model.show;
+    if (!show) return [];
+    const tMin = -this.introDuration();
+    const tMax = show.duration_s + this.outroDuration();
+    const times = [];
+    for (let t = tMin; t <= tMax + 0.001; t += stepS) {
+      if (this.proximityPairsAt(t, minSepM).length > 0) times.push(t);
+    }
+    this._proxCache = times;
+    this._proxCacheKey = cacheKey;
+    this._proxCacheShowKey = this._cacheKey;
+    return times;
+  }
+
   // ---------- position at global time ----------
 
   /**

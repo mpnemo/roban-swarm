@@ -205,6 +205,16 @@ export class Timeline {
         this.ticksEl.appendChild(tick);
       }
     }
+
+    // Red markers at times where any pair is < 3m apart — spans intro,
+    // show, and outro. The scrubber thumb passes right over them during
+    // playback so you know when to look for a collision.
+    for (const ct of this.lifecycle.proximitySampleTimes()) {
+      const tick = document.createElement("div");
+      tick.className = "scrubber-conflict";
+      tick.style.left = (((ct - tMin) / span) * 100).toFixed(3) + "%";
+      this.ticksEl.appendChild(tick);
+    }
   }
 
   _updateReadout() {

@@ -173,6 +173,7 @@ export class AltitudeView {
 
     this._drawGrid();
     this._drawLifecycleBands();
+    this._drawConflictBands();
     if (this.showLifecycle && this.lifecycle.hasLineup()) {
       for (const track of show.tracks) this._drawIntroOutroAlt(track);
     }
@@ -181,6 +182,21 @@ export class AltitudeView {
     }
     for (const track of show.tracks) this._drawTrack(track);
     this._drawTimeCursor();
+  }
+
+  /** Faint red vertical bands over every sampled conflict time. */
+  _drawConflictBands() {
+    const times = this.lifecycle.proximitySampleTimes();
+    if (times.length === 0) return;
+    const { y0, h } = this._plotArea();
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 23, 68, 0.22)";
+    for (const t of times) {
+      const x = this.tToX(t);
+      ctx.fillRect(x - 1, y0, 2, h);
+    }
+    ctx.restore();
   }
 
   /** Shade the intro and outro t-bands so users see the show boundaries. */
