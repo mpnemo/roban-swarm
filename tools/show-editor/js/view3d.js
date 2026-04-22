@@ -278,11 +278,11 @@ export class ThreeView {
         const segCol = segmentColor(ratio, speed, heli);
         const pA = nedToThree(a.pos.n + off.n, a.pos.e + off.e, a.pos.d + off.d);
         const pB = nedToThree(b.pos.n + off.n, b.pos.e + off.e, b.pos.d + off.d);
-        const off = i * 6;
-        positions[off + 0] = pA.x; positions[off + 1] = pA.y; positions[off + 2] = pA.z;
-        positions[off + 3] = pB.x; positions[off + 4] = pB.y; positions[off + 5] = pB.z;
-        colors[off + 0] = segCol.r; colors[off + 1] = segCol.g; colors[off + 2] = segCol.b;
-        colors[off + 3] = segCol.r; colors[off + 4] = segCol.g; colors[off + 5] = segCol.b;
+        const bo = i * 6; // buffer offset into positions/colors
+        positions[bo + 0] = pA.x; positions[bo + 1] = pA.y; positions[bo + 2] = pA.z;
+        positions[bo + 3] = pB.x; positions[bo + 4] = pB.y; positions[bo + 5] = pB.z;
+        colors[bo + 0] = segCol.r; colors[bo + 1] = segCol.g; colors[bo + 2] = segCol.b;
+        colors[bo + 3] = segCol.r; colors[bo + 4] = segCol.g; colors[bo + 5] = segCol.b;
       }
       const geom = new THREE.BufferGeometry();
       geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
