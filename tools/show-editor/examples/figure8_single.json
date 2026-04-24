@@ -1,0 +1,31 @@
+{
+  "name": "Figure 8 — single heli",
+  "version": 1,
+  "home_lat": 0,
+  "home_lon": 0,
+  "home_alt_m": 0,
+  "duration_s": 60,
+  "tracks": [
+    {
+      "heli_id": 1,
+      "style": {
+        "max_speed": 3.0,
+        "max_accel": 1.5,
+        "max_jerk": 4.0,
+        "angle_max_deg": 20.0,
+        "corner_radius": 1.5
+      },
+      "waypoints": [
+        { "t": 0,  "pos": { "n": 0,  "e": 0, "d": -5 }, "hold_s": 2 },
+        { "t": 8,  "pos": { "n": 5,  "e": 3, "d": -5 } },
+        { "t": 14, "pos": { "n": 7,  "e": 0, "d": -5 } },
+        { "t": 20, "pos": { "n": 5,  "e": -3, "d": -5 } },
+        { "t": 26, "pos": { "n": 0,  "e": 0, "d": -5 } },
+        { "t": 32, "pos": { "n": -5, "e": -3, "d": -5 } },
+        { "t": 38, "pos": { "n": -7, "e": 0, "d": -5 } },
+        { "t": 44, "pos": { "n": -5, "e": 3, "d": -5 } },
+        { "t": 50, "pos": { "n": 0,  "e": 0, "d": -5 }, "hold_s": 5 }
+      ]
+    }
+  ]
+}

@@ -26,10 +26,13 @@ MODE_POSHOLD = 16
 #   bit 9:   force set (0)
 #   bit 10:  ignore yaw (1 = ignore)
 #   bit 11:  ignore yaw_rate (1 = ignore)
-# We use position + velocity, ignore accel + yaw:
-TYPE_MASK_POS_VEL = (
-    0b0000_1101_1100_0000  # = 0x0DC0
-)
+
+# Pos + velocity, ignore accel + yaw + yaw_rate (FC auto-faces travel).
+TYPE_MASK_POS_VEL = 0b0000_1101_1100_0000  # = 0x0DC0
+
+# Pos + velocity + explicit yaw, ignore accel + yaw_rate. Used when the
+# show file provides a waypoint yaw_deg.
+TYPE_MASK_POS_VEL_YAW = 0b0000_1001_1100_0000  # = 0x09C0
 
 
 class CommandSender:
@@ -54,23 +57,32 @@ class CommandSender:
     def send_position_target(self, heli_id: int,
                               pos_n: float, pos_e: float, pos_d: float,
                               vel_n: float = 0, vel_e: float = 0,
-                              vel_d: float = 0):
+                              vel_d: float = 0,
+                              yaw_rad: float | None = None):
         """Send SET_POSITION_TARGET_LOCAL_NED to a heli.
 
-        Position and velocity in NED frame. Acceleration and yaw are ignored
-        (ArduPilot auto-faces direction of travel).
+        Position and velocity in NED frame. Acceleration always ignored.
+        yaw_rad: if None, yaw is ignored (ArduPilot auto-faces direction
+        of travel — default behavior). If a float is provided, it's sent
+        as an absolute heading (radians, 0 = north, clockwise positive).
         """
         conn = self._get_conn(heli_id)
         target_system = 10 + heli_id + get_sysid_offset()
+        if yaw_rad is None:
+            type_mask = TYPE_MASK_POS_VEL
+            yaw_val = 0.0
+        else:
+            type_mask = TYPE_MASK_POS_VEL_YAW
+            yaw_val = float(yaw_rad)
         conn.mav.set_position_target_local_ned_send(
             0,                                  # time_boot_ms (0 = autopilot time)
             target_system, 1,                   # target system, component
             mavutil.mavlink.MAV_FRAME_LOCAL_NED,
-            TYPE_MASK_POS_VEL,
+            type_mask,
             pos_n, pos_e, pos_d,                # position (m)
             vel_n, vel_e, vel_d,                # velocity (m/s)
             0, 0, 0,                            # acceleration (ignored)
-            0, 0,                               # yaw, yaw_rate (ignored)
+            yaw_val, 0,                         # yaw (rad), yaw_rate (ignored)
         )
 
     def send_set_mode(self, heli_id: int, mode_id: int):

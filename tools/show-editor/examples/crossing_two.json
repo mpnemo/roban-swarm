@@ -1,0 +1,46 @@
+{
+  "name": "Crossing paths — two helis",
+  "version": 1,
+  "home_lat": 0,
+  "home_lon": 0,
+  "home_alt_m": 0,
+  "duration_s": 40,
+  "tracks": [
+    {
+      "heli_id": 1,
+      "style": {
+        "max_speed": 4.0,
+        "max_accel": 2.0,
+        "max_jerk": 5.0,
+        "angle_max_deg": 25.0,
+        "corner_radius": 1.5
+      },
+      "waypoints": [
+        { "t": 0,  "pos": { "n": -10, "e": 0, "d": -5 } },
+        { "t": 5,  "pos": { "n": -5,  "e": 0, "d": -5 } },
+        { "t": 15, "pos": { "n": 5,   "e": 0, "d": -5 } },
+        { "t": 20, "pos": { "n": 10,  "e": 0, "d": -5 } },
+        { "t": 25, "pos": { "n": 10,  "e": 0, "d": -5 } },
+        { "t": 40, "pos": { "n": -10, "e": 0, "d": -5 } }
+      ]
+    },
+    {
+      "heli_id": 2,
+      "style": {
+        "max_speed": 4.0,
+        "max_accel": 2.0,
+        "max_jerk": 5.0,
+        "angle_max_deg": 25.0,
+        "corner_radius": 1.5
+      },
+      "waypoints": [
+        { "t": 0,  "pos": { "n": 0, "e": -10, "d": -8 } },
+        { "t": 5,  "pos": { "n": 0, "e": -5,  "d": -8 } },
+        { "t": 15, "pos": { "n": 0, "e": 5,   "d": -8 } },
+        { "t": 20, "pos": { "n": 0, "e": 10,  "d": -8 } },
+        { "t": 25, "pos": { "n": 0, "e": 10,  "d": -8 } },
+        { "t": 40, "pos": { "n": 0, "e": -10, "d": -8 } }
+      ]
+    }
+  ]
+}

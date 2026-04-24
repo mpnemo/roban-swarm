@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
 
 
 class HeliPhase(str, Enum):
@@ -80,6 +80,18 @@ class Waypoint(BaseModel):
         ge=0,
         description="Hold at this waypoint for N seconds before moving on",
     )
+    yaw_deg: Optional[float] = Field(
+        default=None,
+        description="Optional compass heading (0-360°, 0=N, 90=E) held at "
+                    "this waypoint. If absent (on both neighbors), daemon "
+                    "masks yaw and ArduPilot auto-faces direction of travel.",
+    )
+    yaw_mode: Literal["auto", "absolute"] = Field(
+        default="auto",
+        description="'auto' (default) ignores yaw_deg and auto-faces "
+                    "direction of travel. 'absolute' sends yaw_deg as a "
+                    "compass heading.",
+    )
 
 
 class HeliStyle(BaseModel):
@@ -107,6 +119,92 @@ class HeliTrack(BaseModel):
     )
 
 
+class OpsOverrides(BaseModel):
+    """Per-show overrides for daemon operational constants.
+
+    Any field omitted falls back to the daemon's built-in default —
+    see flight_daemon.py for current values. These fields affect how
+    the daemon runs the show; they are *not* artistic parameters.
+    """
+    hover_alt_m: Optional[float] = Field(
+        default=None, gt=0,
+        description="First heli's takeoff + staging cruise altitude. "
+                    "Default 5.0m. Heli i hovers at "
+                    "hover_alt_m + i * hover_alt_step_m.",
+    )
+    hover_alt_step_m: Optional[float] = Field(
+        default=None, ge=0,
+        description="Per-heli-index step added to hover_alt_m during "
+                    "intro. Stacks helis at different altitudes during "
+                    "the horizontal traverse so their paths can't cross "
+                    "at the same level — mirrors the outro return stack. "
+                    "Default 3.0m. Set to 0 for flat parallel hover.",
+    )
+    spool_time_s: Optional[float] = Field(
+        default=None, ge=0,
+        description="Rotor spool-up after arm. Default 8.0s.",
+    )
+    return_base_alt_m: Optional[float] = Field(
+        default=None, gt=0,
+        description="First heli's return altitude. Default 8.0m.",
+    )
+    return_alt_step_m: Optional[float] = Field(
+        default=None, ge=0,
+        description="Per-heli return altitude stagger. Default 3.0m.",
+    )
+    landing_descent_rate: Optional[float] = Field(
+        default=None, gt=0,
+        description="Controlled descent rate. Default 1.0 m/s.",
+    )
+
+
+class Sequencing(BaseModel):
+    """Per-show staggering of startup / takeoff / landing.
+
+    Default 0 everywhere = current parallel behavior. Non-zero values
+    insert per-heli delays in the respective phases of
+    flight_daemon._launch_sequence / _landing_sequence.
+    """
+    startup_stagger_s: float = Field(
+        default=0.0, ge=0,
+        description="Delay between arm+spool cycles. Reduces peak rotor "
+                    "noise and gives the operator time to watch each "
+                    "heli come up individually.",
+    )
+    takeoff_stagger_s: float = Field(
+        default=0.0, ge=0,
+        description="Delay between lift-offs. Important when lineup "
+                    "spacing is tight — parallel climb can put helis "
+                    "close at hover altitude.",
+    )
+    landing_stagger_s: float = Field(
+        default=0.0, ge=0,
+        description="Delay between descent starts. Helis hold at their "
+                    "staggered return altitude until it's their turn "
+                    "to descend — only one heli is active in the "
+                    "descent lane at a time.",
+    )
+
+
+class LineupSpec(BaseModel):
+    """Planned ground placement of each heli before takeoff.
+
+    Informational only from the daemon's perspective — the real lineup
+    is captured from live GPS in `capture_lineup()`. The editor uses
+    this block to preview the intro/outro phases (takeoff, staging,
+    return, descent) and validate safety across the full lifecycle.
+    """
+    positions: dict[int, Vec3] = Field(
+        description="Per-heli planned ground position in NED meters "
+                    "(d should be 0 — on the ground). Key = heli_id.",
+    )
+    tolerance_m: float = Field(
+        default=1.0, ge=0,
+        description="Physical placement uncertainty radius per heli. "
+                    "Used by the editor's variance-aware safety check.",
+    )
+
+
 class ShowFile(BaseModel):
     """Top-level show file — contains metadata + all heli tracks."""
     name: str = Field(description="Show name")
@@ -114,6 +212,29 @@ class ShowFile(BaseModel):
     home_lat: float = Field(description="Home latitude (decimal degrees)")
     home_lon: float = Field(description="Home longitude (decimal degrees)")
     home_alt_m: float = Field(default=0, description="Home altitude AMSL (m)")
+    show_offset: Optional[Vec3] = Field(
+        default=None,
+        description="G54-style offset applied to every waypoint at load "
+                    "time. Lets a show be designed centered on (0,0,0) and "
+                    "translated in space without editing every waypoint. "
+                    "Daemon adds this to each wp.pos in `load_show`.",
+    )
+    sequencing: Optional[Sequencing] = Field(
+        default=None,
+        description="Staggered startup / takeoff / landing. Default 0 = "
+                    "parallel (current behavior).",
+    )
+    ops: Optional[OpsOverrides] = Field(
+        default=None,
+        description="Per-show overrides for daemon operational constants "
+                    "(hover altitude, spool time, return altitude stagger, "
+                    "descent rate). Any field omitted uses daemon defaults.",
+    )
+    lineup: Optional[LineupSpec] = Field(
+        default=None,
+        description="Planned lineup + placement tolerance. Optional; daemon "
+                    "captures live lineup from GPS at flight time.",
+    )
     duration_s: float = Field(
         gt=0,
         description="Total show duration (seconds) — must be ≥ last waypoint time",

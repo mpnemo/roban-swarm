@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Roban Swarm — Show Editor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.js",
+        "three/addons/": "./vendor/three-addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>Roban Swarm — Show Editor</h1>
+    <button class="btn" id="btn-new">New</button>
+    <button class="btn" id="btn-open">Open…</button>
+    <input type="file" id="file-picker" accept=".json" hidden />
+    <select id="example-select">
+      <option value="">Load example…</option>
+      <option value="examples/figure8_single.json">Figure 8 — single heli</option>
+      <option value="examples/crossing_two.json">Crossing paths — two helis</option>
+      <option value="examples/formation_three.json">Triangle rotation — three helis</option>
+      <option value="examples/helix_eight.json">Counter-rotating helix — eight helis</option>
+    </select>
+    <button class="btn" id="btn-fit">Fit view</button>
+    <label class="toggle-label" title="Dashed Catmull-Rom overlay showing the intended shape. The flight daemon actually streams linear segments between waypoints — the solid line is what helis fly.">
+      <input type="checkbox" id="toggle-smooth" />
+      Smooth preview
+    </label>
+    <span class="spacer"></span>
+    <span id="status-summary" class="status-summary"></span>
+    <button class="btn accent" id="btn-save">Save As…</button>
+  </header>
+
+  <main>
+    <section class="canvas-pane">
+      <div class="view-tabs">
+        <button class="view-tab active" data-view="topdown">Top-down</button>
+        <button class="view-tab" data-view="3d">3D</button>
+      </div>
+      <div class="topdown-wrap view-panel" data-view="topdown">
+        <canvas id="topdown"></canvas>
+        <div class="canvas-hint">Click to add waypoint · drag to move · shift-drag to pan · wheel to zoom</div>
+      </div>
+      <div class="view3d-wrap view-panel" data-view="3d" hidden>
+        <canvas id="view3d"></canvas>
+        <div class="canvas-hint">Left-drag to orbit · right-drag to pan · wheel to zoom</div>
+      </div>
+      <canvas id="altitude" class="altitude-canvas"></canvas>
+    </section>
+
+    <aside class="side-pane" id="side-pane"></aside>
+  </main>
+
+  <footer class="timeline-bar" id="timeline-bar"></footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

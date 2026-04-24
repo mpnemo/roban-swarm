@@ -35,7 +35,10 @@ TICK_INTERVAL = 1.0 / TICK_HZ
 # Startup
 SPOOL_TIME_S = 8.0              # TradiHeli rotor spool-up after arm
 TAKEOFF_DELAY_S = 3.0           # Between sequential takeoffs
-HOVER_ALT_M = 5.0               # Default takeoff hover altitude
+HOVER_ALT_M = 5.0               # Default takeoff hover altitude (heli 0)
+HOVER_ALT_STEP_M = 3.0          # Default per-heli hover stack during intro
+                                # (mirrors RETURN_ALT_STEP_M). Set to 0 to
+                                # revert to flat parallel hover.
 ARM_TIMEOUT_S = 15.0            # Wait for arm confirmation (helis can be slow)
 MODE_TIMEOUT_S = 5.0            # Wait for mode change confirmation
 
@@ -74,6 +77,32 @@ REQUIRED_FAILSAFE_PARAMS = {
 
 # NED
 M_PER_DEG_LAT = 111319.5
+
+
+def _yaw_rad(wp):
+    """Waypoint yaw in radians, or None if the wp doesn't specify one."""
+    if getattr(wp, "yaw_mode", "auto") != "absolute":
+        return None
+    y = getattr(wp, "yaw_deg", None)
+    if y is None:
+        return None
+    return math.radians(y)
+
+
+def _interp_yaw(a, b, frac):
+    """Short-path linear yaw interpolation between two waypoints. Returns
+    None if neither waypoint specifies an absolute yaw. When only one of
+    the two specifies yaw, that value is held through the segment."""
+    ya, yb = _yaw_rad(a), _yaw_rad(b)
+    if ya is None and yb is None:
+        return None
+    if ya is None:
+        return yb
+    if yb is None:
+        return ya
+    # Short-path angular lerp
+    dy = (yb - ya + math.pi) % (2 * math.pi) - math.pi
+    return ya + dy * frac
 
 
 class DaemonState(str, Enum):
@@ -123,6 +152,29 @@ class FlightDaemon:
         """Map heli_id to MAVLink sysid, respecting sim mode offset."""
         return 10 + heli_id + get_sysid_offset()
 
+    def _op(self, name: str, default: float) -> float:
+        """Read a daemon operational constant with optional per-show override.
+
+        Any field on ShowFile.ops shadows the module-level default.
+        """
+        ops = self._show.ops if self._show else None
+        if ops is not None:
+            v = getattr(ops, name, None)
+            if v is not None:
+                return v
+        return default
+
+    def _hover_alt_for(self, heli_idx: int) -> float:
+        """Per-heli staging hover altitude (positive m AGL).
+
+        Intro altitude stack mirrors the outro return stack: heli i flies
+        at base + i * step during takeoff and horizontal traverse. Set
+        step to 0 in ops for flat parallel hover.
+        """
+        base = self._op("hover_alt_m", HOVER_ALT_M)
+        step = self._op("hover_alt_step_m", HOVER_ALT_STEP_M)
+        return base + heli_idx * step
+
     @property
     def state(self) -> DaemonState:
         return self._state
@@ -158,11 +210,28 @@ class FlightDaemon:
         return self.load_show(show)
 
     def load_show(self, show: ShowFile) -> list[str]:
-        """Load and validate a show. Returns errors (empty=ok)."""
+        """Load and validate a show. Returns errors (empty=ok).
+
+        If show.show_offset is set, adds it to every waypoint position
+        before storing — G54-style offset, per the show-editor contract.
+        """
         errors = show.validate_timing()
         if errors:
             self._state = DaemonState.ERROR
             return errors
+        # Apply show_offset in place — editor can round-trip the field
+        # because we don't strip it; only the in-memory wp.pos values
+        # are shifted. On re-save, offset stays in JSON.
+        if show.show_offset is not None:
+            off = show.show_offset
+            if off.n != 0 or off.e != 0 or off.d != 0:
+                for track in show.tracks:
+                    for wp in track.waypoints:
+                        wp.pos.n += off.n
+                        wp.pos.e += off.e
+                        wp.pos.d += off.d
+                log.info("Applied show_offset n=%.2f e=%.2f d=%.2f",
+                         off.n, off.e, off.d)
         self._show = show
         self._lineup = None  # Reset lineup when new show loaded
         self._state = DaemonState.LOADED
@@ -413,6 +482,9 @@ class FlightDaemon:
         """Automated launch sequence."""
         try:
             heli_ids = sorted(self._show.get_heli_ids())
+            seq = self._show.sequencing
+            startup_stagger = (seq.startup_stagger_s if seq else 0.0)
+            takeoff_stagger = (seq.takeoff_stagger_s if seq else 0.0)
 
             # Start in-flight monitoring (runs alongside all flight phases)
             self._monitor_task = asyncio.create_task(
@@ -423,7 +495,12 @@ class FlightDaemon:
             self._state = DaemonState.ARMING
             await self._emit_status()
 
-            for heli_id in heli_ids:
+            for idx, heli_id in enumerate(heli_ids):
+                if idx > 0 and startup_stagger > 0:
+                    log.info("Startup stagger: waiting %.1fs before Heli%02d arm",
+                             startup_stagger, heli_id)
+                    await asyncio.sleep(startup_stagger)
+
                 self._heli_phases[heli_id] = HeliPhase.ARMING
                 await self._emit_phase_progress()
 
@@ -449,8 +526,9 @@ class FlightDaemon:
             for heli_id in heli_ids:
                 self._heli_phases[heli_id] = HeliPhase.SPOOLING
             await self._emit_phase_progress()
-            log.info("Spooling up (%.0fs)...", SPOOL_TIME_S)
-            await asyncio.sleep(SPOOL_TIME_S)
+            spool_time = self._op("spool_time_s", SPOOL_TIME_S)
+            log.info("Spooling up (%.0fs)...", spool_time)
+            await asyncio.sleep(spool_time)
 
             # --- Phase 3: TAKEOFF (parallel) ---
             self._state = DaemonState.TAKING_OFF
@@ -478,34 +556,57 @@ class FlightDaemon:
             await self._emit_status()
 
     async def _parallel_takeoff(self, heli_ids: list[int]):
-        """Parallel takeoff — all helis climb simultaneously.
+        """Takeoff — all helis climb to hover altitude.
 
-        All helis rise to hover altitude at the same time. We wait until
-        ALL have reached altitude before proceeding to horizontal movement.
+        Staggered per show.sequencing.takeoff_stagger_s (0 = parallel).
+        Heli i starts its climb i * stagger_s after phase start; until
+        then it's held at its lineup position on the ground.
         """
         for heli_id in heli_ids:
             self._heli_phases[heli_id] = HeliPhase.TAKING_OFF
         await self._emit_phase_progress()
-        log.info("All helis taking off to %.1fm (parallel)", HOVER_ALT_M)
+        seq = self._show.sequencing
+        takeoff_stagger = (seq.takeoff_stagger_s if seq else 0.0)
+        base_alt = self._op("hover_alt_m", HOVER_ALT_M)
+        step_alt = self._op("hover_alt_step_m", HOVER_ALT_STEP_M)
+        max_alt = base_alt + (len(heli_ids) - 1) * step_alt
+        if takeoff_stagger > 0:
+            log.info("Takeoff: staggered by %.1fs between helis "
+                     "(stack %.1f–%.1fm)",
+                     takeoff_stagger, base_alt, max_alt)
+        else:
+            log.info("Parallel takeoff, stacked (%.1f–%.1fm)",
+                     base_alt, max_alt)
 
+        phase_start = time.monotonic()
         at_altitude = set()
-        deadline = time.monotonic() + 30
+        # Deadline grows with stagger so the last heli still has time.
+        deadline_extra = (len(heli_ids) - 1) * takeoff_stagger
+        deadline = phase_start + 30 + deadline_extra
 
         while self._state == DaemonState.TAKING_OFF:
-            for heli_id in heli_ids:
+            now = time.monotonic()
+            for idx, heli_id in enumerate(heli_ids):
                 home = self._lineup.home_positions[heli_id]
-                await self._send_safe(heli_id, home.n, home.e, -(HOVER_ALT_M))
+                heli_alt = self._hover_alt_for(idx)
+                # Before this heli's scheduled lift-off, hold on the ground.
+                heli_start = phase_start + idx * takeoff_stagger
+                if now < heli_start:
+                    await self._send_safe(heli_id, home.n, home.e, 0.0)
+                    continue
+                await self._send_safe(heli_id, home.n, home.e, -heli_alt)
 
                 if heli_id not in at_altitude:
                     v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
-                    if v and v.get("relative_alt_m", 0) >= (HOVER_ALT_M - 1.0):
+                    if v and v.get("relative_alt_m", 0) >= (heli_alt - 1.0):
                         at_altitude.add(heli_id)
-                        log.info("Heli%02d at hover altitude", heli_id)
+                        log.info("Heli%02d at hover altitude (%.1fm)",
+                                 heli_id, heli_alt)
 
             if len(at_altitude) == len(heli_ids):
                 log.info("All helis at hover altitude")
                 break
-            if time.monotonic() > deadline:
+            if now > deadline:
                 raise RuntimeError("Takeoff timeout — not all helis reached altitude")
 
             await asyncio.sleep(TICK_INTERVAL)
@@ -526,15 +627,17 @@ class FlightDaemon:
         await self._emit_phase_progress()
         await self._emit_event({"type": "show_event", "event": "staging_traverse"})
 
-        # Phase 1: Fly horizontally at hover altitude to target N/E
-        log.info("Staging phase 1: horizontal traverse at hover altitude")
+        # Phase 1: Fly horizontally at each heli's staged hover altitude.
+        # Helis at different hover levels can't cross at the same altitude,
+        # so intro path crossings are safe by construction.
+        log.info("Staging phase 1: horizontal traverse (stacked hover)")
         arrived_horiz = set()
         deadline = time.monotonic() + 30
         while self._state == DaemonState.STAGING:
-            for heli_id in heli_ids:
+            for idx, heli_id in enumerate(heli_ids):
                 t = targets[heli_id]
-                # Keep at hover altitude, fly to target N/E
-                await self._send_safe(heli_id, t.n, t.e, -(HOVER_ALT_M))
+                heli_alt = self._hover_alt_for(idx)
+                await self._send_safe(heli_id, t.n, t.e, -heli_alt)
 
                 if heli_id not in arrived_horiz:
                     v = self._tracker.get(self._sysid(heli_id)) if self._tracker else None
@@ -696,9 +799,11 @@ class FlightDaemon:
                 self._heli_phases[heli_id] = HeliPhase.RETURNING
             await self._emit_phase_progress()
 
+            return_base = self._op("return_base_alt_m", RETURN_BASE_ALT_M)
+            return_step = self._op("return_alt_step_m", RETURN_ALT_STEP_M)
             return_alts = {}
             for idx, heli_id in enumerate(heli_ids):
-                return_alts[heli_id] = -(RETURN_BASE_ALT_M + idx * RETURN_ALT_STEP_M)
+                return_alts[heli_id] = -(return_base + idx * return_step)
 
             # Fly all simultaneously — wait for all to arrive (or 10s max)
             arrived = set()
@@ -725,8 +830,14 @@ class FlightDaemon:
                     break
                 await asyncio.sleep(TICK_INTERVAL)
 
-            # --- Phase 2: Parallel descent ---
-            log.info("Landing phase 2: parallel descent")
+            # --- Phase 2: Descent (possibly staggered) ---
+            seq = self._show.sequencing
+            landing_stagger = (seq.landing_stagger_s if seq else 0.0)
+            if landing_stagger > 0:
+                log.info("Landing phase 2: staggered descent (%.1fs between helis)",
+                         landing_stagger)
+            else:
+                log.info("Landing phase 2: parallel descent")
             await self._emit_event({"type": "show_event", "event": "descending"})
 
             for heli_id in heli_ids:
@@ -734,20 +845,30 @@ class FlightDaemon:
             await self._emit_phase_progress()
 
             # Track per-heli descent state
+            descent_rate = self._op("landing_descent_rate", LANDING_DESCENT_RATE)
             descent_d = {hid: return_alts[hid] for hid in heli_ids}
             landed_since = {hid: None for hid in heli_ids}
             landed_set = set()
-            deadline = time.monotonic() + 45
+            descent_start = time.monotonic()
+            # Deadline grows with stagger so the last heli has time.
+            deadline = descent_start + 45 + (len(heli_ids) - 1) * landing_stagger
 
             while self._state == DaemonState.LANDING:
-                for heli_id in heli_ids:
+                now = time.monotonic()
+                for idx, heli_id in enumerate(heli_ids):
                     if heli_id in landed_set:
                         continue
 
                     home = self._lineup.home_positions[heli_id]
 
+                    # Hold at return altitude until this heli's turn.
+                    heli_start = descent_start + idx * landing_stagger
+                    if now < heli_start:
+                        await self._send_safe(heli_id, home.n, home.e, return_alts[heli_id])
+                        continue
+
                     # Lower target altitude
-                    descent_d[heli_id] += LANDING_DESCENT_RATE * TICK_INTERVAL
+                    descent_d[heli_id] += descent_rate * TICK_INTERVAL
                     if descent_d[heli_id] > 0:
                         descent_d[heli_id] = 0
 
@@ -1040,12 +1161,26 @@ class FlightDaemon:
     async def _send_target(self, heli_id: int, target: dict):
         """Send interpolated target through safety monitor."""
         pos, vel = target["pos"], target["vel"]
+        yaw_rad = target.get("yaw_rad")
         if self._safety:
+            # Safety monitor currently ignores yaw — not a safety-critical
+            # signal. It forwards the position+velocity; yaw goes direct.
             await self._safety.check_and_send(
                 heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d)
+            if yaw_rad is not None and self._sender:
+                # Also emit the yaw target directly. Belt-and-braces: the
+                # next safety tick will re-send the same pos+vel with
+                # yaw still not set, but ArduPilot's yaw controller will
+                # keep tracking the last explicit yaw command.
+                self._sender.send_position_target(
+                    heli_id, pos.n, pos.e, pos.d,
+                    vel.n, vel.e, vel.d, yaw_rad=yaw_rad,
+                )
         elif self._sender:
             self._sender.send_position_target(
-                heli_id, pos.n, pos.e, pos.d, vel.n, vel.e, vel.d)
+                heli_id, pos.n, pos.e, pos.d,
+                vel.n, vel.e, vel.d, yaw_rad=yaw_rad,
+            )
 
     async def _send_safe(self, heli_id: int,
                           n: float, e: float, d: float,
@@ -1057,20 +1192,40 @@ class FlightDaemon:
             self._sender.send_position_target(heli_id, n, e, d, vn, ve, vd)
 
     def _interpolate(self, track: HeliTrack, t: float) -> dict | None:
-        """Linear interpolation between waypoints."""
+        """Linear interpolation between waypoints.
+
+        Returns {pos, vel, yaw_rad}. yaw_rad is None when both neighbors
+        have yaw_mode='auto' (the default) — daemon then masks yaw and
+        ArduPilot auto-faces the direction of travel. When a neighbor
+        specifies an absolute yaw, we short-path-interpolate between the
+        specified values (or hold the explicit one through the segment).
+        """
         wps = track.waypoints
         if t <= wps[0].t:
-            return {"pos": wps[0].pos, "vel": Vec3(n=0, e=0, d=0)}
+            return {
+                "pos": wps[0].pos,
+                "vel": Vec3(n=0, e=0, d=0),
+                "yaw_rad": _yaw_rad(wps[0]),
+            }
 
         for i in range(len(wps) - 1):
             if wps[i].t <= t <= wps[i + 1].t:
-                if wps[i].hold_s > 0 and t <= wps[i].t + wps[i].hold_s:
-                    return {"pos": wps[i].pos, "vel": Vec3(n=0, e=0, d=0)}
-                dt = wps[i + 1].t - wps[i].t
+                a, b = wps[i], wps[i + 1]
+                if a.hold_s > 0 and t <= a.t + a.hold_s:
+                    return {
+                        "pos": a.pos,
+                        "vel": Vec3(n=0, e=0, d=0),
+                        "yaw_rad": _yaw_rad(a),
+                    }
+                dt = b.t - a.t
                 if dt <= 0:
-                    return {"pos": wps[i + 1].pos, "vel": Vec3(n=0, e=0, d=0)}
-                frac = (t - wps[i].t) / dt
-                p0, p1 = wps[i].pos, wps[i + 1].pos
+                    return {
+                        "pos": b.pos,
+                        "vel": Vec3(n=0, e=0, d=0),
+                        "yaw_rad": _yaw_rad(b),
+                    }
+                frac = (t - a.t) / dt
+                p0, p1 = a.pos, b.pos
                 pos = Vec3(
                     n=p0.n + (p1.n - p0.n) * frac,
                     e=p0.e + (p1.e - p0.e) * frac,
@@ -1081,9 +1236,14 @@ class FlightDaemon:
                     e=(p1.e - p0.e) / dt,
                     d=(p1.d - p0.d) / dt,
                 )
-                return {"pos": pos, "vel": vel}
+                yaw_rad = _interp_yaw(a, b, frac)
+                return {"pos": pos, "vel": vel, "yaw_rad": yaw_rad}
 
-        return {"pos": wps[-1].pos, "vel": Vec3(n=0, e=0, d=0)}
+        return {
+            "pos": wps[-1].pos,
+            "vel": Vec3(n=0, e=0, d=0),
+            "yaw_rad": _yaw_rad(wps[-1]),
+        }
 
     def _gps_to_ned(self, lat: float, lon: float, alt_m: float
                      ) -> tuple[float, float, float]:

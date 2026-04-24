@@ -475,7 +475,8 @@ roban-swarm/
 │   ├── ap_setup_checklist.md          # AP configuration checklist
 │   ├── identity_mapping.md            # MAC/IP/SYSID mapping procedure
 │   ├── troubleshooting.md            # Common issues + fixes
-│   └── bringup_log.md               # Hardware bring-up session log
+│   ├── bringup_log.md               # Hardware bring-up session log
+│   └── show_editor.md               # Show editor status + next steps (handoff)
 ├── base-station/
 │   ├── install.sh                     # Base station provisioning
 │   ├── config/
@@ -510,11 +511,28 @@ roban-swarm/
 │       ├── status_dump.sh
 │       ├── bench_smoketest.sh
 │       └── set_heli_id.sh
-└── test/
-    ├── bench_checklist.md
-    ├── field_checklist.md
-    └── soak_test.md
+├── test/
+│   ├── bench_checklist.md
+│   ├── field_checklist.md
+│   └── soak_test.md
+└── tools/
+    └── show-editor/                   # Local-only choreography editor
+        ├── README.md                  # Run + JSON reference
+        ├── DESIGN.md                  # Editor design + decisions
+        ├── editor.html                # Single-page entry, no build step
+        ├── js/                        # model + views + lifecycle + validate
+        ├── css/style.css
+        ├── examples/                  # 4 demo shows
+        └── vendor/                    # Three.js r160 (offline)
 ```
+
+### Show editor
+
+A standalone vanilla-JS tool for authoring choreography JSON files
+that the flight daemon consumes. Runs locally with
+`python3 -m http.server` — no npm, no bundler, no network. See
+[`docs/show_editor.md`](docs/show_editor.md) for current status and
+the next-steps handoff for new sessions.
 
 ---
 
